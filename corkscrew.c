@@ -191,7 +191,7 @@ char *argv[];
 			desthost = argv[3];
 			destport = argv[4];
 		}
-		if ((argc == 6)) {
+		if (argc == 6) {
 			host = argv[1];
 			port = atoi(argv[2]);
 			desthost = argv[3];
@@ -207,7 +207,9 @@ char *argv[];
 				up = line;
 				fclose(fp);
 			}
-		}
+        } else {
+            up = getenv("PROXY_UP");
+        }
 	} else {
 		usage();
 		exit(-1);
@@ -218,7 +220,7 @@ char *argv[];
 	strncat(uri, ":", sizeof(uri) - strlen(uri) - 1);
 	strncat(uri, destport, sizeof(uri) - strlen(uri) - 1);
 	strncat(uri, " HTTP/1.0", sizeof(uri) - strlen(uri) - 1);
-	if ((argc == 6) || (argc == 7)) {
+	if ((argc == 6) || (argc == 7) || (up != NULL)) {
 		strncat(uri, "\nProxy-Authorization: Basic ", sizeof(uri) - strlen(uri) - 1);
 		strncat(uri, base64_encode(up), sizeof(uri) - strlen(uri) - 1);
 	}
