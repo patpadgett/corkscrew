@@ -204,7 +204,7 @@ char *argv[];
 				char line[4096];
 				fscanf(fp, "%s", line);
 				up = malloc(sizeof(line));
-				up = line;
+				strncpy(up, line, sizeof(line));
 				fclose(fp);
 			}
 		}
