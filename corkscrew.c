@@ -191,7 +191,7 @@ char *argv[];
 			desthost = argv[3];
 			destport = argv[4];
 		}
-		if ((argc == 6)) {
+		if (argc == 6) {
 			host = argv[1];
 			port = atoi(argv[2]);
 			desthost = argv[3];
