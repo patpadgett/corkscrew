@@ -13,6 +13,7 @@ Corkscrew has been compiled on :
  * OpenBSD
  * Linux
  * Win32 (with Cygwin)
+ * masOS X
 
 Corkscrew has been tested with the following HTTP proxies :
  * Gauntlet
@@ -24,21 +25,20 @@ Please email me if you get it working on other proxies or compile
 it elsewhere.
 
 
-Where Do I Get It?
-------------------
-Corkscrew's primary distribution site is :
-http://www.agroman.net/corkscrew/ 
-
-
 How Do I Build It?
 ------------------
 In the corkscrew directory type './configure' then 'make'.  Check
 out the INSTALL file for more information.
 
+ex. macOS X
+```
+./configure --host=i686-apple-macos
+make
+```
 
 How Do I Install It?
 --------------------
-In the corkscrew directory type 'make install'.
+In the corkscrew directory type 'make install' or 'sudo make install'.
 
 
 How Is It Used?
@@ -85,12 +85,4 @@ if you could include the following information :
  server.  The problems are sporadic, and I believe that they are related
  to the round-robin setup that I was testing it again.  Your mileage may
  vary.
-
-
-Who Am I?
----------
-My name is Pat Padgett.  I'm a dork.
-URL   : http://www.agroman.net/
-Email : agroman@agroman.net
-
-This has been a traumatized production.  http://www.trauma-inc.com/
+ 
