@@ -13,7 +13,7 @@ Corkscrew has been compiled on :
  * OpenBSD
  * Linux
  * Win32 (with Cygwin)
- * masOS X
+ * macOS
 
 Corkscrew has been tested with the following HTTP proxies :
  * Gauntlet
@@ -30,9 +30,9 @@ How Do I Build It?
 In the corkscrew directory type './configure' then 'make'.  Check
 out the INSTALL file for more information.
 
-ex. macOS X
+ex. macOS
 ```
-./configure --host=i686-apple-macos
+./configure --build=i686-apple-macos
 make
 ```
 

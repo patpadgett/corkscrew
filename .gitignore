@@ -6,5 +6,6 @@ config.log
 config.status
 corkscrew
 corkscrew.o
-stamp-h
+stamp-h*
+*~
 

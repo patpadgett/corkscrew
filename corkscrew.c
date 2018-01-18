@@ -127,7 +127,7 @@ void usage (void)
 void usage ()
 #endif
 {
-	printf("corkscrew %s (agroman@agroman.net)\n\n", VERSION);
+	printf("corkscrew %s\n\n", VERSION);
 	printf("usage: corkscrew <proxyhost> <proxyport> <desthost> <destport> [authfile]\n");
 }
 
