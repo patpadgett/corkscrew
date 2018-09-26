@@ -1,5 +1,6 @@
-AC_INIT(corkscrew.c)
-AM_INIT_AUTOMAKE(corkscrew, 2.0.1)
+AC_INIT([corkscrew], [2.0.1])
+AC_CONFIG_SRCDIR([corkscrew.c])
+AM_INIT_AUTOMAKE
 AM_CONFIG_HEADER(config.h:config.in)
 #AM_C_PROTOTYPES
 

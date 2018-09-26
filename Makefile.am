@@ -1,5 +1,5 @@
 AUTOMAKE_OPTIONS = no-dependencies foreign
-INCLUDES = -I$(srcdir)
+AM_CPPFLAGS = -I$(srcdir)
 bin_PROGRAMS = corkscrew
 corkscrew_SOURCES = corkscrew.c
 
