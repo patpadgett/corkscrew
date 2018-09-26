@@ -27,12 +27,13 @@ it elsewhere.
 
 How Do I Build It?
 ------------------
-In the corkscrew directory type './configure' then 'make'.  Check
-out the INSTALL file for more information.
+In the corkscrew directory type 'autoreconf -i', './configure' then 'make'.
+Check out the INSTALL file for more information.
 
-ex. macOS
+ex.
 ```
-./configure --build=i686-apple-macos
+autoreconf -i
+./configure
 make
 ```
 

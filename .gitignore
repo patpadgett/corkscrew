@@ -8,4 +8,7 @@ corkscrew
 corkscrew.o
 stamp-h*
 *~
+compile
+config.guess
+config.sub
 
