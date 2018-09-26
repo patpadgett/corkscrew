@@ -127,7 +127,7 @@ void usage (void)
 void usage ()
 #endif
 {
-	printf("corkscrew %s (agroman@agroman.net)\n\n", VERSION);
+	printf("corkscrew %s\n\n", VERSION);
 	printf("usage: corkscrew <proxyhost> <proxyport> <desthost> <destport> [authfile]\n");
 }
 
@@ -191,7 +191,7 @@ char *argv[];
 			desthost = argv[3];
 			destport = argv[4];
 		}
-		if ((argc == 6)) {
+		if (argc == 6) {
 			host = argv[1];
 			port = atoi(argv[2]);
 			desthost = argv[3];
@@ -204,7 +204,7 @@ char *argv[];
 				char line[4096];
 				fscanf(fp, "%s", line);
 				up = malloc(sizeof(line));
-				up = line;
+				strncpy(up, line, sizeof(line));
 				fclose(fp);
 			}
 		}
