@@ -1,5 +1,6 @@
 Welcome to Corkscrew
 --------------------
+![build-status-master](https://travis-ci.org/patpadgett/corkscrew.svg?branch=master)
 
 Introduction
 ------------
@@ -13,6 +14,7 @@ Corkscrew has been compiled on :
  * OpenBSD
  * Linux
  * Win32 (with Cygwin)
+ * macOS
 
 Corkscrew has been tested with the following HTTP proxies :
  * Gauntlet
@@ -27,7 +29,7 @@ it elsewhere.
 Where Do I Get It?
 ------------------
 Corkscrew's primary distribution site is :
-http://www.agroman.net/corkscrew/ 
+https://github.com/patpadgett/corkscrew
 
 
 How Do I Build It?
@@ -85,12 +87,3 @@ if you could include the following information :
  server.  The problems are sporadic, and I believe that they are related
  to the round-robin setup that I was testing it again.  Your mileage may
  vary.
-
-
-Who Am I?
----------
-My name is Pat Padgett.  I'm a dork.
-URL   : http://www.agroman.net/
-Email : agroman@agroman.net
-
-This has been a traumatized production.  http://www.trauma-inc.com/
