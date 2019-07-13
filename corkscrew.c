@@ -200,11 +200,11 @@ char *argv[];
 			fp = fopen(argv[5], "r");
 			if (fp == NULL) {
 				fprintf(stderr, "Error opening %s: %s\n", argv[5], strerror(errno));
-				exit(-1);
+				exit(EXIT_FAILURE);
 			} else {
 				if (!fscanf(fp, "%4095s", line)) {
 					fprintf(stderr, "Error reading auth file's content\n");
-					exit(-1);
+					exit(EXIT_FAILURE);
 				}
 
 				up = line;
@@ -213,7 +213,7 @@ char *argv[];
 		}
 	} else {
 		usage();
-		exit(-1);
+		exit(EXIT_FAILURE);
 	}
 
 	strncpy(uri, "CONNECT ", sizeof(uri));
@@ -230,7 +230,7 @@ char *argv[];
 	csock = sock_connect(host, port);
 	if(csock == -1) {
 		fprintf(stderr, "Couldn't establish connection to proxy: %s\n", strerror(errno));
-		exit(-1);
+		exit(EXIT_FAILURE);
 	}
 
 	sent = 0;
@@ -264,7 +264,7 @@ char *argv[];
 						if ((strncmp(version,"HTTP/",5) == 0) && (code >= 407)) {
 						}
 						fprintf(stderr, "Proxy could not open connection to %s: %s\n", desthost, descr);
-						exit(-1);
+						exit(EXIT_FAILURE);
 					}
 				}
 			}
@@ -291,5 +291,5 @@ char *argv[];
 			}
 		}
 	}
-	exit(0);
+	exit(EXIT_SUCCESS);
 }

@@ -1,3 +1,8 @@
-rm aclocal.m4 configure config.in compile install-sh config.sub config.guess INSTALL Makefile.in missing config.in\~ 
+#!/bin/sh
+
 rm -rf autom4te.cache
+rm -f INSTALL Makefile Makefile.in aclocal.m4 compile config.guess config.h \
+      config.in config.in\~ config.log config.status config.sub configure \
+      install-sh missing stamp-h1
+
 autoreconf -fi && autoconf
