@@ -1,40 +1,14 @@
-#include "config.h"
-#include <arpa/inet.h>
 #include <errno.h>
-#include <fcntl.h>
-#include <netdb.h>
-#include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
 
-#if HAVE_SYS_FILIO_H
-#include <sys/filio.h>
-#endif
+#include "corkscrew.h"
 
-#if __STDC__
-#  ifndef NOPROTOS
-#    define PARAMS(args)      args
-#  endif
-#endif
-#ifndef PARAMS
-#  define PARAMS(args)        ()
-#endif
-
-char *base64_encodei PARAMS((char *in));
-void usage PARAMS((void));
-int sock_connect PARAMS((const char *hname, int port));
-int main PARAMS((int argc, char *argv[]));
-
-#define BUFSIZE 4096
-/*
-char linefeed[] = "\x0A\x0D\x0A\x0D";
-*/
-char linefeed[] = "\r\n\r\n"; /* it is better and tested with oops & squid */
+const static char linefeed[] = "\r\n\r\n";
 
 /*
 ** base64.c
@@ -132,36 +106,6 @@ void usage ()
 }
 
 #ifdef ANSI_FUNC
-int sock_connect (const char *hname, int port)
-#else
-int sock_connect (hname, port)
-const char *hname;
-int port;
-#endif
-{
-	int fd;
-	struct sockaddr_in addr;
-	struct hostent *hent;
-
-	fd = socket(AF_INET, SOCK_STREAM, 0);
-	if (fd == -1)
-		return -1;
-
-	hent = gethostbyname(hname);
-	if (hent == NULL)
-		addr.sin_addr.s_addr = inet_addr(hname);
-	else
-		memcpy(&addr.sin_addr, hent->h_addr, hent->h_length);
-	addr.sin_family = AF_INET;
-	addr.sin_port = htons(port);
-
-	if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)))
-		return -1;
-
-	return fd;
-}
-
-#ifdef ANSI_FUNC
 int main (int argc, char *argv[])
 #else
 int main (argc, argv)
@@ -174,27 +118,25 @@ char *argv[];
 #else
 	char uri[BUFSIZE], buffer[BUFSIZE], version[BUFSIZE], descr[BUFSIZE];
 #endif
-	char *host = NULL, *desthost = NULL, *destport = NULL;
-	char *up = NULL, line[4096];
-	int port, sent, setup, code, csock;
+	char line[4096], *up = NULL;
+	char *host = NULL, *port = NULL, *desthost = NULL, *destport = NULL;
+	int sent, setup, code, csock;
 	fd_set rfd, sfd;
 	struct timeval tv;
 	ssize_t len;
 	FILE *fp;
 
-	port = 80;
-
 	if (argc == 5 || argc == 6) {
 		if (argc == 5) {
 			host = argv[1];
-			port = atoi(argv[2]);
+			port = argv[2];
 			desthost = argv[3];
 			destport = argv[4];
 			up = getenv("CORKSCREW_AUTH");
 		}
 		if (argc == 6) {
 			host = argv[1];
-			port = atoi(argv[2]);
+			port = argv[2];
 			desthost = argv[3];
 			destport = argv[4];
 			fp = fopen(argv[5], "r");

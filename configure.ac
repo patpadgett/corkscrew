@@ -21,12 +21,17 @@ esac
 
 AC_HEADER_STDC
 AC_HEADER_TIME
-dnl AC_CHECK_HEADERS(fcntl.h sys/ioctl.h sys/time.h unistd.h arpa/inet.h errno.h netdb.h netinet/in.h stdio.h stdlib.h string.h sys/socket.h sys/types.h)
-
-dnl AC_CHECK_TYPE
-
 AC_CHECK_FUNCS(select socket strerror)
+
 dnl check for working const (hpux)
 AC_C_CONST
+
+AC_CHECK_TYPE([struct addrinfo], [have_addrinfo=yes], [], [[#include <netdb.h>]])
+AM_CONDITIONAL([IPV6], [test "x$have_addrinfo" = "xyes"])
+
+AC_CHECK_MEMBER([struct hostent.h_addr],
+		[AC_DEFINE([HAVE_H_ADDR], [1],
+			   [Define to 1 if struct hostent contains the h_addr member.])],
+		[], [[#include <netdb.h>]])
 
 AC_OUTPUT(Makefile)
