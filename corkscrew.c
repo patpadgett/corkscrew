@@ -9,6 +9,11 @@
 #include "corkscrew.h"
 
 const static char linefeed[] = "\r\n\r\n";
+struct args_st args;
+
+void usage PARAMS(());
+void parse_args PARAMS((int argc, char *argv[]));
+void expect_arg_param PARAMS((char *argv));
 
 /*
 ** base64.c
@@ -44,7 +49,6 @@ char *in;
 	if (!buf)
 		return NULL;
 	ret = buf;
-
 
 	for (src = in; src < end - 3;) {
 		tmp = *src++ << 24;
@@ -96,16 +100,6 @@ char *in;
 }
 
 #ifdef ANSI_FUNC
-void usage (void)
-#else
-void usage ()
-#endif
-{
-	printf("corkscrew %s (agroman@agroman.net)\n\n", VERSION);
-	printf("usage: corkscrew <proxyhost> <proxyport> <desthost> <destport> [authfile]\n");
-}
-
-#ifdef ANSI_FUNC
 int main (int argc, char *argv[])
 #else
 int main (argc, argv)
@@ -113,55 +107,37 @@ int argc;
 char *argv[];
 #endif
 {
-#ifdef ANSI_FUNC
-	char uri[BUFSIZE] = "", buffer[BUFSIZE] = "", version[BUFSIZE] = "", descr[BUFSIZE] = "";
-#else
 	char uri[BUFSIZE], buffer[BUFSIZE], version[BUFSIZE], descr[BUFSIZE];
-#endif
 	char line[4096], *up = NULL;
-	char *host = NULL, *port = NULL, *desthost = NULL, *destport = NULL;
 	int sent, setup, code, csock;
 	fd_set rfd, sfd;
 	struct timeval tv;
 	ssize_t len;
 	FILE *fp;
 
-	if (argc == 5 || argc == 6) {
-		if (argc == 5) {
-			host = argv[1];
-			port = argv[2];
-			desthost = argv[3];
-			destport = argv[4];
-			up = getenv("CORKSCREW_AUTH");
-		}
-		if (argc == 6) {
-			host = argv[1];
-			port = argv[2];
-			desthost = argv[3];
-			destport = argv[4];
-			fp = fopen(argv[5], "r");
-			if (fp == NULL) {
-				fprintf(stderr, "Error opening %s: %s\n", argv[5], strerror(errno));
-				exit(EXIT_FAILURE);
-			} else {
-				if (!fscanf(fp, "%4095s", line)) {
-					fprintf(stderr, "Error reading auth file's content\n");
-					exit(EXIT_FAILURE);
-				}
+	parse_args(argc, argv);
+	if (!args.authfile) {
+		up = getenv("CORKSCREW_AUTH");
 
-				up = line;
-				fclose(fp);
-			}
-		}
 	} else {
-		usage();
-		exit(EXIT_FAILURE);
+		fp = fopen(args.authfile, "r");
+		if (fp == NULL) {
+			fprintf(stderr, "Error opening %s: %s\n", args.authfile, strerror(errno));
+			exit(EXIT_FAILURE);
+		} else {
+			if (!fscanf(fp, "%4095s", line)) {
+				fprintf(stderr, "Error reading auth file's content\n");
+				exit(EXIT_FAILURE);
+			}
+			up = line;
+			fclose(fp);
+		}
 	}
 
 	strncpy(uri, "CONNECT ", sizeof(uri));
-	strncat(uri, desthost, sizeof(uri) - strlen(uri) - 1);
+	strncat(uri, args.desthost, sizeof(uri) - strlen(uri) - 1);
 	strncat(uri, ":", sizeof(uri) - strlen(uri) - 1);
-	strncat(uri, destport, sizeof(uri) - strlen(uri) - 1);
+	strncat(uri, args.destport, sizeof(uri) - strlen(uri) - 1);
 	strncat(uri, " HTTP/1.0", sizeof(uri) - strlen(uri) - 1);
 	if (up != NULL) {
 		strncat(uri, "\nProxy-Authorization: Basic ", sizeof(uri) - strlen(uri) - 1);
@@ -169,7 +145,7 @@ char *argv[];
 	}
 	strncat(uri, linefeed, sizeof(uri) - strlen(uri) - 1);
 
-	csock = sock_connect(host, port);
+	csock = sock_connect(args.host, args.port);
 	if(csock == -1) {
 		fprintf(stderr, "Couldn't establish connection to proxy: %s\n", strerror(errno));
 		exit(EXIT_FAILURE);
@@ -205,7 +181,7 @@ char *argv[];
 					else {
 						if ((strncmp(version,"HTTP/",5) == 0) && (code >= 407)) {
 						}
-						fprintf(stderr, "Proxy could not open connection to %s: %s\n", desthost, descr);
+						fprintf(stderr, "Proxy could not open connection to %s: %s\n", args.desthost, descr);
 						exit(EXIT_FAILURE);
 					}
 				}
@@ -234,4 +210,75 @@ char *argv[];
 		}
 	}
 	exit(EXIT_SUCCESS);
+}
+
+#ifdef ANSI_FUNC
+void usage (void)
+#else
+void usage ()
+#endif
+{
+	printf("corkscrew %s (agroman@agroman.net)\n\n", VERSION);
+	printf("usage: corkscrew [-h] [-a authfile] <proxyhost> <proxyport> <desthost> <destport>\n");
+}
+
+#ifdef ANSI_FUNC
+void parse_args (int argc, char *argv[])
+#else
+void parse_args (argc, argv)
+int argc;
+char *argv[];
+#endif
+{
+	int i, j, len;
+	int reqargs; /* required argument count */
+
+	reqargs = argc;
+	for (i = 1; i < argc; i++) {
+		if (argv[i][0] != '-')
+			break;
+
+		len = strlen(&argv[i][1]) + 1;
+		for (j = 1; j < len; j++) {
+			switch (argv[i][j]) {
+			case 'a':
+				expect_arg_param(&argv[i][j]);
+				args.authfile = argv[++i];
+				reqargs -= 2;
+				goto end_inner;
+			case 'h':
+				usage();
+				exit(EXIT_SUCCESS);
+			default:
+				usage();
+				exit(EXIT_FAILURE);
+			}
+		}
+
+		reqargs--;
+end_inner: ;
+	}
+
+	if (reqargs < 5) {
+		usage();
+		exit(EXIT_FAILURE);
+	}
+
+	args.host = argv[i++];
+	args.port = argv[i++];
+	args.desthost = argv[i++];
+	args.destport = argv[i++];
+}
+
+#ifdef ANSI_FUNC
+void expect_arg_param (char *argv)
+#else
+void expect_arg_param ()
+char *argv;
+#endif
+{
+	if (argv[1] != '\0') {
+		fprintf(stderr, "Argument '-%c' expects a parameter.\n", argv[0]);
+		exit(EXIT_FAILURE);
+	}
 }

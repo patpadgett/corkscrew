@@ -22,6 +22,16 @@
 #  define PARAMS(args)        ()
 #endif
 
+struct args_st {
+	char *host;
+	char *port;
+	char *desthost;
+	char *destport;
+	char *authfile;
+};
+
+extern struct args_st args;
+
 int sock_connect PARAMS((const char *hname, const char *port));
 
 #endif /* _CORKSCREW_H */
