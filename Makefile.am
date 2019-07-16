@@ -8,3 +8,10 @@ corkscrew_SOURCES += sock_ipv6.c
 else
 corkscrew_SOURCES += sock_ipv4.c
 endif
+
+if SSL
+corkscrew_CPPFLAGS = -DUSE_SSL
+corkscrew_CFLAGS = $(SSL_CFLAGS)
+corkscrew_LDFLAGS = $(SSL_LIBS)
+corkscrew_SOURCES += ssl.c ssl.h
+endif

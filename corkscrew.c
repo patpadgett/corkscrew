@@ -109,7 +109,8 @@ char *argv[];
 {
 	char uri[BUFSIZE], buffer[BUFSIZE], version[BUFSIZE], descr[BUFSIZE];
 	char line[4096], *up = NULL;
-	int sent, setup, code, csock;
+	CONN csock;
+	int fd, sent, setup, code;
 	fd_set rfd, sfd;
 	struct timeval tv;
 	ssize_t len;
@@ -145,32 +146,33 @@ char *argv[];
 	}
 	strncat(uri, linefeed, sizeof(uri) - strlen(uri) - 1);
 
-	csock = sock_connect(args.host, args.port);
-	if(csock == -1) {
+	fd = sock_connect(args.host, args.port);
+	if (fd == -1) {
 		fprintf(stderr, "Couldn't establish connection to proxy: %s\n", strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 
+	csock = conn_init(fd);
 	sent = 0;
 	setup = 0;
 	for(;;) {
 		FD_ZERO(&sfd);
 		FD_ZERO(&rfd);
 		if ((setup == 0) && (sent == 0)) {
-			FD_SET(csock, &sfd);
+			FD_SET(FD(csock), &sfd);
 		}
-		FD_SET(csock, &rfd);
+		FD_SET(FD(csock), &rfd);
 		FD_SET(0, &rfd);
 
 		tv.tv_sec = 5;
 		tv.tv_usec = 0;
 
-		if(select(csock+1,&rfd,&sfd,NULL,&tv) == -1) break;
+		if(select(FD(csock)+1,&rfd,&sfd,NULL,&tv) == -1) break;
 
 		/* there's probably a better way to do this */
 		if (setup == 0) {
-			if (FD_ISSET(csock, &rfd)) {
-				len = read(csock, buffer, sizeof(buffer));
+			if (FD_ISSET(FD(csock), &rfd)) {
+				len = peer_read(csock, buffer, sizeof(buffer));
 				if (len<=0)
 					break;
 				else {
@@ -186,16 +188,16 @@ char *argv[];
 					}
 				}
 			}
-			if (FD_ISSET(csock, &sfd) && (sent == 0)) {
-				len = write(csock, uri, strlen(uri));
+			if (FD_ISSET(FD(csock), &sfd) && (sent == 0)) {
+				len = peer_write(csock, uri, strlen(uri));
 				if (len<=0)
 					break;
 				else
 					sent = 1;
 			}
 		} else {
-			if (FD_ISSET(csock, &rfd)) {
-				len = read(csock, buffer, sizeof(buffer));
+			if (FD_ISSET(FD(csock), &rfd)) {
+				len = peer_read(csock, buffer, sizeof(buffer));
 				if (len<=0) break;
 				len = write(1, buffer, len);
 				if (len<=0) break;
@@ -204,11 +206,13 @@ char *argv[];
 			if (FD_ISSET(0, &rfd)) {
 				len = read(0, buffer, sizeof(buffer));
 				if (len<=0) break;
-				len = write(csock, buffer, len);
+				len = peer_write(csock, buffer, len);
 				if (len<=0) break;
 			}
 		}
 	}
+
+	conn_free(csock);
 	exit(EXIT_SUCCESS);
 }
 
@@ -219,7 +223,28 @@ void usage ()
 #endif
 {
 	printf("corkscrew %s (agroman@agroman.net)\n\n", VERSION);
-	printf("usage: corkscrew [-h] [-a authfile] <proxyhost> <proxyport> <desthost> <destport>\n");
+#ifdef USE_SSL
+	printf("usage: corkscrew [-his] [-a authfile] [-c cert]\n");
+	printf("                 <proxyhost> <proxyport> <desthost> <destport>\n");
+#else
+	printf("usage: corkscrew [-h] [-a authfile]\n");
+	printf("                 <proxyhost> <proxyport> <desthost> <destport>\n");
+#endif
+	puts("");
+	printf("  proxyhost\tthe host name of the proxy to use\n");
+	printf("  proxyport\tthe port address of the proxy to use\n");
+	printf("  desthost\tthe host name of the SSH server to connect to\n");
+	printf("  destport\tthe port address of the SSH server to connect to\n");
+	puts("");
+	printf("  -h\t\tdisplay this help message\n");
+	printf("  -a authfile\tspecify a file containing authentication credentials\n");
+
+#ifdef USE_SSL
+	printf("  -i\t\tignore certificates that cannot be verified\n");
+	printf("  -s\t\tenable SSL connection to the proxy\n");
+	printf("  -c cert\tspecify a file containing a trusted CA\n");
+#endif
+	puts("");
 }
 
 #ifdef ANSI_FUNC
@@ -249,6 +274,19 @@ char *argv[];
 			case 'h':
 				usage();
 				exit(EXIT_SUCCESS);
+#ifdef USE_SSL
+			case 'c':
+				expect_arg_param(&argv[i][j]);
+				args.trust_ca = argv[++i];
+				reqargs -= 2;
+				goto end_inner;
+			case 'i':
+				args.ignore_certs = 1;
+				break;
+			case 's':
+				args.ssl = 1;
+				break;
+#endif
 			default:
 				usage();
 				exit(EXIT_FAILURE);
