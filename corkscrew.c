@@ -55,7 +55,7 @@ char *in;
 	char *buf, *ret;
 
 	unsigned int tmp;
-	
+
 	int i,len;
 
 	len = strlen(in);
@@ -154,7 +154,7 @@ int port;
 		memcpy(&addr.sin_addr, hent->h_addr, hent->h_length);
 	addr.sin_family = AF_INET;
 	addr.sin_port = htons(port);
-	
+
 	if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)))
 		return -1;
 
@@ -175,7 +175,7 @@ char *argv[];
 	char uri[BUFSIZE], buffer[BUFSIZE], version[BUFSIZE], descr[BUFSIZE];
 #endif
 	char *host = NULL, *desthost = NULL, *destport = NULL;
-	char *up = NULL;
+	char *up = NULL, line[4096];
 	int port, sent, setup, code, csock;
 	fd_set rfd, sfd;
 	struct timeval tv;
@@ -184,14 +184,15 @@ char *argv[];
 
 	port = 80;
 
-	if ((argc == 5) || (argc == 6)) {
+	if (argc == 5 || argc == 6) {
 		if (argc == 5) {
 			host = argv[1];
 			port = atoi(argv[2]);
 			desthost = argv[3];
 			destport = argv[4];
+			up = getenv("CORKSCREW_AUTH");
 		}
-		if ((argc == 6)) {
+		if (argc == 6) {
 			host = argv[1];
 			port = atoi(argv[2]);
 			desthost = argv[3];
@@ -201,9 +202,11 @@ char *argv[];
 				fprintf(stderr, "Error opening %s: %s\n", argv[5], strerror(errno));
 				exit(-1);
 			} else {
-				char line[4096];
-				fscanf(fp, "%s", line);
-				up = malloc(sizeof(line));
+				if (!fscanf(fp, "%4095s", line)) {
+					fprintf(stderr, "Error reading auth file's content\n");
+					exit(-1);
+				}
+
 				up = line;
 				fclose(fp);
 			}
@@ -218,7 +221,7 @@ char *argv[];
 	strncat(uri, ":", sizeof(uri) - strlen(uri) - 1);
 	strncat(uri, destport, sizeof(uri) - strlen(uri) - 1);
 	strncat(uri, " HTTP/1.0", sizeof(uri) - strlen(uri) - 1);
-	if ((argc == 6) || (argc == 7)) {
+	if (up != NULL) {
 		strncat(uri, "\nProxy-Authorization: Basic ", sizeof(uri) - strlen(uri) - 1);
 		strncat(uri, base64_encode(up), sizeof(uri) - strlen(uri) - 1);
 	}
@@ -253,13 +256,14 @@ char *argv[];
 				if (len<=0)
 					break;
 				else {
+					memset(descr, 0, sizeof(descr));
 					sscanf(buffer,"%s%d%[^\n]",version,&code,descr);
 					if ((strncmp(version,"HTTP/",5) == 0) && (code >= 200) && (code < 300))
 						setup = 1;
 					else {
 						if ((strncmp(version,"HTTP/",5) == 0) && (code >= 407)) {
 						}
-						fprintf(stderr, "Proxy could not open connnection to %s: %s\n", desthost, descr);
+						fprintf(stderr, "Proxy could not open connection to %s: %s\n", desthost, descr);
 						exit(-1);
 					}
 				}
