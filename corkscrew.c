@@ -55,7 +55,7 @@ char *in;
 	char *buf, *ret;
 
 	unsigned int tmp;
-	
+
 	int i,len;
 
 	len = strlen(in);
@@ -154,7 +154,7 @@ int port;
 		memcpy(&addr.sin_addr, hent->h_addr, hent->h_length);
 	addr.sin_family = AF_INET;
 	addr.sin_port = htons(port);
-	
+
 	if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)))
 		return -1;
 
@@ -191,7 +191,7 @@ char *argv[];
 			desthost = argv[3];
 			destport = argv[4];
 		}
-		if ((argc == 6)) {
+		if (argc == 6) {
 			host = argv[1];
 			port = atoi(argv[2]);
 			desthost = argv[3];
@@ -204,7 +204,7 @@ char *argv[];
 				char line[4096];
 				fscanf(fp, "%s", line);
 				up = malloc(sizeof(line));
-				up = line;
+				strncpy(up, line, sizeof(line));
 				fclose(fp);
 			}
 		}
@@ -217,9 +217,9 @@ char *argv[];
 	strncat(uri, desthost, sizeof(uri) - strlen(uri) - 1);
 	strncat(uri, ":", sizeof(uri) - strlen(uri) - 1);
 	strncat(uri, destport, sizeof(uri) - strlen(uri) - 1);
-	strncat(uri, " HTTP/1.0", sizeof(uri) - strlen(uri) - 1);
+	strncat(uri, " HTTP/1.1", sizeof(uri) - strlen(uri) - 1);
 	if ((argc == 6) || (argc == 7)) {
-		strncat(uri, "\nProxy-Authorization: Basic ", sizeof(uri) - strlen(uri) - 1);
+		strncat(uri, "\r\nProxy-Authorization: Basic ", sizeof(uri) - strlen(uri) - 1);
 		strncat(uri, base64_encode(up), sizeof(uri) - strlen(uri) - 1);
 	}
 	strncat(uri, linefeed, sizeof(uri) - strlen(uri) - 1);
