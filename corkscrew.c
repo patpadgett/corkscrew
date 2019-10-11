@@ -219,7 +219,7 @@ char *argv[];
 	strncat(uri, destport, sizeof(uri) - strlen(uri) - 1);
 	strncat(uri, " HTTP/1.0", sizeof(uri) - strlen(uri) - 1);
 	if ((argc == 6) || (argc == 7)) {
-		strncat(uri, "\nProxy-Authorization: Basic ", sizeof(uri) - strlen(uri) - 1);
+		strncat(uri, "\r\nProxy-Authorization: Basic ", sizeof(uri) - strlen(uri) - 1);
 		strncat(uri, base64_encode(up), sizeof(uri) - strlen(uri) - 1);
 	}
 	strncat(uri, linefeed, sizeof(uri) - strlen(uri) - 1);
