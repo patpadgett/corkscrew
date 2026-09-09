@@ -15,3 +15,9 @@ jobs:
       - run: python3 -m unittest discover -s tests -p 'test_*.py' -v
         env:
           CC: ${{ matrix.compiler }}
+      - run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+        env:
+          CC: ${{ matrix.compiler }}
+          SANITIZE: '1'
+          RELAY_TEST_CFLAGS: '-fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie -no-pie'
+          ASAN_OPTIONS: detect_leaks=1
