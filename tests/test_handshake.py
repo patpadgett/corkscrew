@@ -22,7 +22,7 @@ class HandshakeTests(unittest.TestCase):
         (build / 'config.h').write_text('#define VERSION "handshake-test"\n#define HAVE_SYS_FILIO_H 0\n')
         cls.binary = str(build / 'corkscrew')
         flags = ['-g', '-O1', '-Wall', '-Wextra', '-DANSI_FUNC',
-                 '-DHANDSHAKE_TIMEOUT_MS=300', '-I' + str(build)]
+                 '-DHANDSHAKE_TIMEOUT_MS=300', '-DCONNECT_TIMEOUT_MS=300', '-I' + str(build)]
         if os.environ.get('SANITIZE'):
             flags += ['-fsanitize=address,undefined', '-fno-omit-frame-pointer',
                       '-fno-pie', '-no-pie']
