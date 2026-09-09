@@ -1,2 +1,0 @@
-language: c
-script: autoreconf --force --install && ./configure && make

@@ -1,6 +1,6 @@
 Welcome to Corkscrew
 --------------------
-![build-status-master](https://travis-ci.org/patpadgett/corkscrew.svg?branch=master)
+Build and regression checks run through GitHub Actions. See SECURITY.md for the security model and current validation scope.
 
 Introduction
 ------------
@@ -34,12 +34,14 @@ https://github.com/patpadgett/corkscrew
 
 How Do I Build It?
 ------------------
+From a Git checkout, first run `autoreconf -fi` (requires Autoconf and Automake).
 In the corkscrew directory type './configure' then 'make'.  Check
 out the INSTALL file for more information.
 
 
 How Do I Install It?
 --------------------
+From a Git checkout, first run `autoreconf -fi` (requires Autoconf and Automake).
 In the corkscrew directory type 'make install'.
 
 
@@ -87,3 +89,8 @@ if you could include the following information :
  server.  The problems are sporadic, and I believe that they are related
  to the round-robin setup that I was testing it again.  Your mileage may
  vary.
+
+
+Security note
+-------------
+Proxy authentication is sent over plaintext TCP. Base64 does not encrypt credentials; SSH protects the subsequent tunnel payload, not the proxy login. Use a trusted, protected connection. See SECURITY.md.
