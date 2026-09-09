@@ -19,5 +19,6 @@ jobs:
         env:
           CC: ${{ matrix.compiler }}
           SANITIZE: '1'
+          AUTH_SANITIZE: '1'
           RELAY_TEST_CFLAGS: '-fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie -no-pie'
           ASAN_OPTIONS: detect_leaks=1

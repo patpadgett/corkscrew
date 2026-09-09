@@ -169,6 +169,30 @@ int main(int argc, char **argv) {
         proc.stdin.flush()
         self.assertGreater(proc.wait(timeout=5), 0)
 
+    def test_termination_restores_shared_flags(self):
+        import signal
+        for signo in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            with self.subTest(signal=signo):
+                child, peer = socket.socketpair()
+                stdio, caller = socket.socketpair()
+                original = fcntl.fcntl(stdio, fcntl.F_GETFL)
+                proc = subprocess.Popen([self.binary, str(child.fileno())],
+                    stdin=stdio.fileno(), stdout=stdio.fileno(), stderr=subprocess.PIPE,
+                    pass_fds=(child.fileno(),))
+                try:
+                    deadline = time.monotonic() + 2
+                    while not fcntl.fcntl(stdio, fcntl.F_GETFL) & os.O_NONBLOCK:
+                        self.assertLess(time.monotonic(), deadline)
+                        time.sleep(.005)
+                    proc.send_signal(signo)
+                    self.assertEqual(proc.wait(timeout=2), 128 + signo)
+                    self.assertEqual(fcntl.fcntl(stdio, fcntl.F_GETFL), original)
+                finally:
+                    if proc.poll() is None:
+                        proc.kill(); proc.wait()
+                    proc.stderr.close()
+                    for sock in (child, peer, stdio, caller): sock.close()
+
     def test_shared_stdio_open_file_description_restored(self):
         for nonblocking in (False, True):
             with self.subTest(nonblocking=nonblocking):

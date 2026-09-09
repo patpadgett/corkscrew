@@ -519,6 +519,33 @@ static int perform_handshake(int csock, const char *uri)
 }
 
 /* Buffered duplex relay. Keep each direction independent and bounded. */
+/* Termination is deferred until inherited descriptor flags are restored. */
+static volatile sig_atomic_t termination_requested;
+static void request_termination(int signo) { termination_requested = signo; }
+static int install_termination_handlers(struct sigaction previous[3])
+{
+    const int signals[3] = {SIGTERM, SIGINT, SIGHUP};
+    struct sigaction action;
+    int i;
+    memset(&action, 0, sizeof(action));
+    action.sa_handler = request_termination;
+    sigemptyset(&action.sa_mask);
+    for (i = 0; i < 3; i++) {
+        if (sigaction(signals[i], &action, &previous[i]) < 0) {
+            while (i-- > 0) sigaction(signals[i], &previous[i], NULL);
+            return -1;
+        }
+    }
+    return 0;
+}
+static void restore_termination_handlers(struct sigaction previous[3])
+{
+    const int signals[3] = {SIGTERM, SIGINT, SIGHUP};
+    int i;
+    for (i = 0; i < 3; i++) sigaction(signals[i], &previous[i], NULL);
+}
+
+
 struct relay_buffer {
 	unsigned char data[65536];
 	size_t offset, length;
@@ -571,11 +598,15 @@ static int relay(int csock)
 	struct relay_buffer upstream = {{0}, 0, 0};
 	struct relay_buffer downstream = {{0}, 0, 0};
 	struct pollfd ready[3];
-	struct sigaction ignore, original_signal;
+	struct sigaction ignore, original_signal, termination_previous[3];
+	int termination_installed = 0;
 	int fds[3], original_flags[3], changed[3] = {0, 0, 0};
 	int input_eof = 0, socket_eof = 0, write_shutdown = 0;
 	int signal_changed = 0, error = 0, i, result;
 
+	termination_requested = 0;
+	if (install_termination_handlers(termination_previous) < 0) return 1;
+	termination_installed = 1;
 	fds[0] = STDIN_FILENO;
 	fds[1] = STDOUT_FILENO;
 	fds[2] = csock;
@@ -607,6 +638,7 @@ static int relay(int csock)
 	}
 
 	for (;;) {
+		if (termination_requested) { error = EINTR; goto cleanup; }
 		if (input_eof && upstream.length == 0 && !write_shutdown) {
 			do {
 				result = shutdown(csock, SHUT_WR);
@@ -634,7 +666,8 @@ static int relay(int csock)
 			ready[2].events |= POLLOUT;
 		/* A disabled fd must be -1: events=0 still reports POLLHUP. */
 		ready[2].fd = ready[2].events ? csock : -1;
-		result = poll(ready, 3, -1);
+		/* Bounded wait closes the signal-before-poll race. */
+		result = poll(ready, 3, 100);
 		if (result < 0) {
 			if (errno == EINTR)
 				continue;
@@ -700,6 +733,8 @@ cleanup:
 	}
 	if (signal_changed && sigaction(SIGPIPE, &original_signal, NULL) < 0 && !error)
 		error = errno;
+	if (termination_installed) restore_termination_handlers(termination_previous);
+	if (termination_requested) return 128 + termination_requested;
 	if (error) {
 		fprintf(stderr, "corkscrew: relay: %s\n", strerror(error));
 		return 1;
