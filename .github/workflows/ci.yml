@@ -1,0 +1,17 @@
+name: Build and regression tests
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        compiler: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y autoconf automake gcc clang python3
+      - run: autoreconf -fi && ./configure CC=${{ matrix.compiler }} CFLAGS='-O2 -g -Wall -Wextra' && make
+      - run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+        env:
+          CC: ${{ matrix.compiler }}
