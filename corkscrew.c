@@ -1,4 +1,11 @@
+/* POSIX.1-2008: getaddrinfo, poll and CLOCK_MONOTONIC. */
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include "config.h"
+#include <limits.h>
+#include <poll.h>
+#include <time.h>
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -16,19 +23,10 @@
 #include <sys/filio.h>
 #endif
 
-#if __STDC__
-#  ifndef NOPROTOS
-#    define PARAMS(args)      args
-#  endif
-#endif
-#ifndef PARAMS
-#  define PARAMS(args)        ()
-#endif
-
-char *base64_encode PARAMS((const char *in));
-void usage PARAMS((void));
-int sock_connect PARAMS((const char *hname, int port));
-int main PARAMS((int argc, char *argv[]));
+char *base64_encode(const char *in);
+void usage(void);
+int sock_connect(const char *hname, int port);
+int main(int argc, char *argv[]);
 
 #define BUFSIZE 4096
 /*
@@ -134,34 +132,172 @@ void usage ()
 	printf("usage: corkscrew <proxyhost> <proxyport> <desthost> <destport> [authfile]\n");
 }
 
-#ifdef ANSI_FUNC
-int sock_connect (const char *hname, int port)
-#else
-int sock_connect (hname, port)
-const char *hname;
-int port;
-#endif
+/* Reject strtol's optional signs/whitespace as well as partial parses. */
+static int parse_port(const char *text, int *port)
 {
-	int fd;
-	struct sockaddr_in addr;
-	struct hostent *hent;
-
-	fd = socket(AF_INET, SOCK_STREAM, 0);
-	if (fd == -1)
+	const unsigned char *p = (const unsigned char *)text;
+	char *end;
+	long value;
+	if (!*p)
 		return -1;
-
-	hent = gethostbyname(hname);
-	if (hent == NULL)
-		addr.sin_addr.s_addr = inet_addr(hname);
-	else
-		memcpy(&addr.sin_addr, hent->h_addr, hent->h_length);
-	addr.sin_family = AF_INET;
-	addr.sin_port = htons(port);
-	
-	if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)))
+	for (; *p; ++p)
+		if (*p < '0' || *p > '9')
+			return -1;
+	errno = 0;
+	value = strtol(text, &end, 10);
+	if (errno == ERANGE || *end || value < 1 || value > 65535)
 		return -1;
+	*port = (int)value;
+	return 0;
+}
 
-	return fd;
+/* Normalize optional IPv6 brackets in argv in place. Brackets and colons
+ * are accepted only for an actual IPv6 literal, never as URI syntax. */
+static int validate_host(char **host)
+{
+	unsigned char *p = (unsigned char *)*host;
+	size_t length = strlen(*host);
+	struct in6_addr address;
+	int bracketed = length && (*host)[0] == '[';
+	if (!length)
+		return -1;
+	for (; *p; ++p)
+		if (*p <= 0x20 || *p >= 0x7f || strchr("/@?#\\", *p))
+			return -1;
+	if (bracketed) {
+		if (length < 3 || (*host)[length - 1] != ']')
+			return -1;
+		(*host)[length - 1] = '\0';
+		++*host;
+	}
+	if (strchr(*host, '[') || strchr(*host, ']'))
+		return -1;
+	if (bracketed || strchr(*host, ':'))
+		return inet_pton(AF_INET6, *host, &address) == 1 ? 0 : -1;
+	/* DNS names, IPv4 literals and conventional underscore service names. */
+	for (p = (unsigned char *)*host; *p; ++p)
+		if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+		      (*p >= '0' && *p <= '9') || *p == '-' || *p == '.' || *p == '_'))
+			return -1;
+	return 0;
+}
+
+#ifndef CONNECT_TIMEOUT_MS
+#define CONNECT_TIMEOUT_MS 10000
+#endif
+
+static int connect_remaining_ms(const struct timespec *deadline)
+{
+	struct timespec now;
+	time_t seconds;
+	long nanos;
+	if (clock_gettime(CLOCK_MONOTONIC, &now) < 0)
+		return -1;
+	seconds = deadline->tv_sec - now.tv_sec;
+	nanos = deadline->tv_nsec - now.tv_nsec;
+	if (nanos < 0) {
+		--seconds;
+		nanos += 1000000000L;
+	}
+	if (seconds < 0 || (seconds == 0 && nanos == 0)) {
+		errno = ETIMEDOUT;
+		return -1;
+	}
+	if (seconds >= INT_MAX / 1000)
+		return INT_MAX;
+	return (int)(seconds * 1000 + (nanos + 999999L) / 1000000L);
+}
+
+int sock_connect(const char *hname, int port)
+{
+	struct addrinfo hints, *addresses, *ai;
+	struct timespec deadline;
+	char service[6];
+	int result, saved_errno = EHOSTUNREACH;
+	if (port < 1 || port > 65535) {
+		errno = EINVAL;
+		return -1;
+	}
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_socktype = SOCK_STREAM;
+	hints.ai_protocol = IPPROTO_TCP;
+	hints.ai_flags = AI_NUMERICSERV;
+	snprintf(service, sizeof(service), "%d", port);
+	result = getaddrinfo(hname, service, &hints, &addresses);
+	if (result != 0) {
+		if (result != EAI_SYSTEM)
+			errno = result == EAI_MEMORY ? ENOMEM : EHOSTUNREACH;
+		return -1;
+	}
+	/* Synchronous name resolution is OS-controlled; the shared deadline
+	 * bounds TCP connection attempts across all resolved addresses. */
+	if (clock_gettime(CLOCK_MONOTONIC, &deadline) < 0) {
+		saved_errno = errno;
+		goto done;
+	}
+	deadline.tv_sec += CONNECT_TIMEOUT_MS / 1000;
+	deadline.tv_nsec += (CONNECT_TIMEOUT_MS % 1000) * 1000000L;
+	if (deadline.tv_nsec >= 1000000000L) {
+		++deadline.tv_sec;
+		deadline.tv_nsec -= 1000000000L;
+	}
+	for (ai = addresses; ai; ai = ai->ai_next) {
+		int fd, flags, error, timeout;
+		socklen_t error_length = sizeof(error);
+		struct pollfd ready;
+		if (connect_remaining_ms(&deadline) < 0) {
+			saved_errno = errno;
+			break;
+		}
+		fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+		if (fd < 0) {
+			saved_errno = errno;
+			continue;
+		}
+		flags = fcntl(fd, F_GETFL, 0);
+		if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0)
+			goto failed;
+		if (connect(fd, ai->ai_addr, ai->ai_addrlen) < 0) {
+			if (errno != EINPROGRESS && errno != EINTR)
+				goto failed;
+			ready.fd = fd;
+			ready.events = POLLOUT;
+			for (;;) {
+				timeout = connect_remaining_ms(&deadline);
+				if (timeout < 0)
+					goto failed;
+				result = poll(&ready, 1, timeout);
+				if (result < 0 && errno == EINTR)
+					continue;
+				if (result < 0)
+					goto failed;
+				if (result == 0)
+					continue;
+				if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &error_length) < 0)
+					goto failed;
+				if (error) {
+					errno = error;
+					goto failed;
+				}
+				break;
+			}
+		}
+		/* Preserve the existing caller's blocking-socket contract. */
+		if (fcntl(fd, F_SETFL, flags) < 0)
+			goto failed;
+		freeaddrinfo(addresses);
+		return fd;
+failed:
+		saved_errno = errno;
+		close(fd);
+		if (saved_errno == ETIMEDOUT)
+			break;
+	}
+done:
+	freeaddrinfo(addresses);
+	errno = saved_errno;
+	return -1;
 }
 
 #ifdef ANSI_FUNC
@@ -179,26 +315,35 @@ char *argv[];
 #endif
 	char *host = NULL, *desthost = NULL, *destport = NULL;
 	char *up = NULL;
-	int port, sent, setup, code, csock;
+	int port, destination_port, request_length, sent, setup, code, csock;
 	fd_set rfd, sfd;
 	struct timeval tv;
 	ssize_t len;
 	FILE *fp;
 
-	port = 80;
-
 	if ((argc == 5) || (argc == 6)) {
-		if (argc == 5) {
-			host = argv[1];
-			port = atoi(argv[2]);
-			desthost = argv[3];
-			destport = argv[4];
+		host = argv[1];
+		desthost = argv[3];
+		destport = argv[4];
+		if (parse_port(argv[2], &port) < 0 ||
+		    parse_port(destport, &destination_port) < 0) {
+			fprintf(stderr, "Invalid port: expected decimal integer in 1..65535\n");
+			return EXIT_FAILURE;
+		}
+		if (validate_host(&host) < 0 || validate_host(&desthost) < 0) {
+			fprintf(stderr, "Invalid hostname or IP address\n");
+			return EXIT_FAILURE;
+		}
+		request_length = snprintf(uri, sizeof(uri),
+		    strchr(desthost, ':') ? "CONNECT [%s]:%d HTTP/1.0" : "CONNECT %s:%d HTTP/1.0",
+		    desthost, destination_port);
+		/* Reserve the final CRLF CRLF and NUL before auth is read/appended.
+		 * The authentication builder must separately check its own addition. */
+		if (request_length < 0 || (size_t)request_length >= sizeof(uri) - strlen(linefeed)) {
+			fprintf(stderr, "CONNECT request too long\n");
+			return EXIT_FAILURE;
 		}
 		if ((argc == 6)) {
-			host = argv[1];
-			port = atoi(argv[2]);
-			desthost = argv[3];
-			destport = argv[4];
 			fp = fopen(argv[5], "r");
 			if (fp == NULL) {
 				fprintf(stderr, "Error opening %s: %s\n", argv[5], strerror(errno));
@@ -232,22 +377,17 @@ char *argv[];
 			fprintf(stderr, "Unable to encode proxy credentials\n");
 			exit(EXIT_FAILURE);
 		}
-		request_length = snprintf(uri, sizeof(uri),
-			"CONNECT %s:%s HTTP/1.0\r\nProxy-Authorization: Basic %s\r\n\r\n",
-			desthost, destport, encoded);
+		size_t used = strlen(uri);
+		request_length = snprintf(uri + used, sizeof(uri) - used,
+			"\r\nProxy-Authorization: Basic %s\r\n\r\n", encoded);
 		clear_secret(encoded, strlen(encoded));
 		free(encoded);
-		if (request_length < 0 || (size_t)request_length >= sizeof(uri)) {
+		if (request_length < 0 || (size_t)request_length >= sizeof(uri) - used) {
 			clear_secret(uri, sizeof(uri));
 			fprintf(stderr, "Authenticated CONNECT request is too long\n");
 			exit(EXIT_FAILURE);
 		}
 	} else {
-		strncpy(uri, "CONNECT ", sizeof(uri));
-		strncat(uri, desthost, sizeof(uri) - strlen(uri) - 1);
-		strncat(uri, ":", sizeof(uri) - strlen(uri) - 1);
-		strncat(uri, destport, sizeof(uri) - strlen(uri) - 1);
-		strncat(uri, " HTTP/1.0", sizeof(uri) - strlen(uri) - 1);
 		strncat(uri, linefeed, sizeof(uri) - strlen(uri) - 1);
 	}
 
