@@ -422,20 +422,22 @@ static int handshake_status(const unsigned char *header, size_t length)
 	return -1;
 }
 
-/* Setup owns only the proxy socket, never stdin. The single absolute deadline
- * covers request writes, header reads and forwarding coalesced tunnel bytes.
+/* Setup owns only the proxy socket, never stdin or stdout. The deadline
+ * covers request writes and header reads, not coalesced tunnel bytes.
  * Restore descriptor flags and SIGPIPE disposition before entering the relay.
  * DNS/TCP connect and relay lifetime are deliberately outside this deadline. */
-static int perform_handshake(int csock, const char *uri)
+static int perform_handshake(int csock, char *uri, size_t uri_size,
+		unsigned char *trailing, size_t *trailing_length)
 {
 	unsigned char header[HANDSHAKE_HEADER_LIMIT];
 	size_t used = 0, scan = 0, end = 0;
 	ssize_t count;
 	struct timespec deadline;
 	struct sigaction ignore, previous;
-	int socket_flags = -1, stdout_flags = -1, signal_changed = 0;
+	int socket_flags = -1, signal_changed = 0;
 	int result = -1, saved_errno, code;
 
+	*trailing_length = 0;
 	if (clock_gettime(CLOCK_MONOTONIC, &deadline) < 0)
 		goto done;
 	deadline.tv_sec += HANDSHAKE_TIMEOUT_MS / 1000;
@@ -455,6 +457,8 @@ static int perform_handshake(int csock, const char *uri)
 		goto done;
 	if (handshake_write(csock, uri, strlen(uri), &deadline) < 0)
 		goto done;
+	/* Do not retain encoded credentials while waiting for the proxy. */
+	clear_secret(uri, uri_size);
 	for (;;) {
 		if (used == sizeof(header)) {
 			errno = EMSGSIZE;
@@ -492,20 +496,13 @@ static int perform_handshake(int csock, const char *uri)
 		errno = EPROTO;
 		goto done;
 	}
-	if (used > end) {
-		stdout_flags = fcntl(STDOUT_FILENO, F_GETFL);
-		if (stdout_flags < 0 ||
-			fcntl(STDOUT_FILENO, F_SETFL, stdout_flags | O_NONBLOCK) < 0 ||
-			handshake_write(STDOUT_FILENO, header + end, used - end, &deadline) < 0)
-			goto done;
-	}
+	/* Caller provides HANDSHAKE_HEADER_LIMIT bytes; relay owns delivery. */
+	*trailing_length = used - end;
+	memcpy(trailing, header + end, *trailing_length);
 	result = 0;
  done:
 	saved_errno = errno;
-	if (stdout_flags >= 0 && fcntl(STDOUT_FILENO, F_SETFL, stdout_flags) < 0 && result == 0) {
-		saved_errno = errno;
-		result = -1;
-	}
+	clear_secret(uri, uri_size);
 	if (socket_flags >= 0 && fcntl(csock, F_SETFL, socket_flags) < 0 && result == 0) {
 		saved_errno = errno;
 		result = -1;
@@ -593,7 +590,7 @@ static int relay_write(int fd, struct relay_buffer *buffer)
 	return -1;
 }
 
-static int relay(int csock)
+static int relay(int csock, const unsigned char *trailing, size_t trailing_length)
 {
 	struct relay_buffer upstream = {{0}, 0, 0};
 	struct relay_buffer downstream = {{0}, 0, 0};
@@ -604,6 +601,13 @@ static int relay(int csock)
 	int input_eof = 0, socket_eof = 0, write_shutdown = 0;
 	int signal_changed = 0, error = 0, i, result;
 
+	if (trailing_length > sizeof(downstream.data)) {
+		fprintf(stderr, "corkscrew: relay: initial payload too large\n");
+		return 1;
+	}
+	if (trailing_length)
+		memcpy(downstream.data, trailing, trailing_length);
+	downstream.length = trailing_length;
 	termination_requested = 0;
 	if (install_termination_handlers(termination_previous) < 0) return 1;
 	termination_installed = 1;
@@ -649,12 +653,11 @@ static int relay(int csock)
 			}
 			write_shutdown = 1;
 		}
-		/* Remote EOF ends the session, but never discard queued output
-		 * or input already accepted from the caller. */
-		if (socket_eof && downstream.length == 0 && upstream.length == 0)
+		/* A remote half-close ends only downstream; upstream lives to EOF. */
+		if (socket_eof && write_shutdown && downstream.length == 0)
 			break;
 
-		ready[0].fd = (!input_eof && !socket_eof && upstream.length == 0)
+		ready[0].fd = (!input_eof && upstream.length == 0)
 		    ? STDIN_FILENO : -1;
 		ready[0].events = POLLIN;
 		ready[1].fd = downstream.length ? STDOUT_FILENO : -1;
@@ -713,7 +716,7 @@ static int relay(int csock)
 			if (result == 0)
 				socket_eof = 1;
 		}
-		if (!socket_eof && !input_eof && upstream.length == 0 &&
+		if (!input_eof && upstream.length == 0 &&
 		    (ready[0].revents & (POLLIN | POLLHUP | POLLERR))) {
 			result = relay_read(STDIN_FILENO, &upstream);
 			if (result < 0) {
@@ -758,6 +761,8 @@ char *argv[];
 #endif
 	char *host = NULL, *desthost = NULL, *destport = NULL;
 	char *up = NULL;
+	unsigned char trailing[HANDSHAKE_HEADER_LIMIT];
+	size_t trailing_length;
 	int port, destination_port, request_length, csock;
 	FILE *fp;
 
@@ -790,6 +795,12 @@ char *argv[];
 				exit(-1);
 			} else {
 				int close_error;
+				/* Avoid an uncleared stdio buffer containing credentials. */
+				if (setvbuf(fp, NULL, _IONBF, 0) != 0) {
+					fclose(fp);
+					fprintf(stderr, "Unable to disable authentication file buffering\n");
+					return EXIT_FAILURE;
+				}
 				up = read_credentials(fp);
 				close_error = fclose(fp);
 				if (up == NULL || close_error != 0) {
@@ -833,18 +844,19 @@ char *argv[];
 
 	csock = sock_connect(host, port);
 	if(csock == -1) {
+		clear_secret(uri, sizeof(uri));
 		fprintf(stderr, "Couldn't establish connection to proxy: %s\n", strerror(errno));
 		exit(-1);
 	}
 
-	if (perform_handshake(csock, uri) < 0) {
+	if (perform_handshake(csock, uri, sizeof(uri), trailing, &trailing_length) < 0) {
 		clear_secret(uri, sizeof(uri));
 		fprintf(stderr, "HTTP CONNECT handshake failed: %s\n", strerror(errno));
 		close(csock);
 		return EXIT_FAILURE;
 	}
 	clear_secret(uri, sizeof(uri));
-	int result = relay(csock);
+	int result = relay(csock, trailing, trailing_length);
 	close(csock);
 	return result;
 }

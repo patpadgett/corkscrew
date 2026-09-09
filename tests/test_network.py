@@ -20,12 +20,14 @@ class NetworkTests(unittest.TestCase):
     def setUpClass(cls):
         cls.build = tempfile.TemporaryDirectory(prefix="corkscrew-network-")
         directory = Path(cls.build.name)
+        cls.sanitize_flags = (['-fsanitize=address,undefined', '-fno-omit-frame-pointer',
+                               '-fno-pie', '-no-pie'] if os.environ.get('SANITIZE') else [])
         cls.binary = os.environ.get("CORKSCREW_BINARY")
         if not cls.binary:
             shutil.copyfile(ROOT / "corkscrew.c", directory / "corkscrew.c")
             (directory / "config.h").write_text('#define VERSION "network-test"\n#define ANSI_FUNC 1\n#define HAVE_SYS_FILIO_H 0\n')
             cls.binary = str(directory / "corkscrew")
-            subprocess.run(["gcc", "-std=c99", "-Wall", "-Wextra", "-O2", "-o", cls.binary, str(directory / "corkscrew.c")], check=True)
+            subprocess.run(["gcc", "-std=c99", "-Wall", "-Wextra", "-O2", *cls.sanitize_flags, "-o", cls.binary, str(directory / "corkscrew.c")], check=True)
 
     @classmethod
     def tearDownClass(cls):
@@ -73,7 +75,7 @@ class NetworkTests(unittest.TestCase):
         shutil.copyfile(ROOT / "corkscrew.c", directory / "corkscrew.c")
         (directory / "config.h").write_text('#define VERSION "network-test"\n#define ANSI_FUNC 1\n#define HAVE_SYS_FILIO_H 0\n')
         harness = directory / "network-harness"
-        subprocess.run(["gcc", "-std=c99", "-O1", "-DCONNECT_TIMEOUT_MS=100", "-I", str(directory), "-o", str(harness), str(ROOT / "tests/network_harness.c")], check=True)
+        subprocess.run(["gcc", "-std=c99", "-O1", *self.sanitize_flags, "-DCONNECT_TIMEOUT_MS=100", "-I", str(directory), "-o", str(harness), str(ROOT / "tests/network_harness.c")], check=True)
         result = subprocess.run([str(harness)], capture_output=True, timeout=3)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(b"no fd leak", result.stdout)

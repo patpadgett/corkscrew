@@ -1,6 +1,6 @@
 """Loopback-only CONNECT regressions; direct build needs no generated config.h.
 Run: python3 tests/test_handshake.py [-v]
-Set SANITIZE=1 for ASan/UBSan. No authentication or relay semantics are tested.
+Set SANITIZE=1 for ASan/UBSan. Includes handshake-to-relay integration.
 """
 import os
 from pathlib import Path
@@ -78,8 +78,11 @@ class HandshakeTests(unittest.TestCase):
         if stdin_ready:
             p.stdin.write(b'queued input')
             p.stdin.flush()
+        else:
+            # Successful tunnels end only when both directions reach EOF.
+            p.stdin.close()
         try:
-            # Keep stdin open: the unrelated legacy relay exits on stdin EOF.
+            # The ready-stdin deadline case deliberately keeps input live.
             p.wait(timeout=2)
             elapsed = time.monotonic() - start
             out = p.stdout.read()
@@ -97,6 +100,127 @@ class HandshakeTests(unittest.TestCase):
         self.assertNotIn(b'AddressSanitizer', err)
         self.assertNotIn(b'runtime error:', err)
         return p.returncode, out, err, elapsed
+
+    def test_transition_backpressure_and_remote_half_close(self):
+        # Prefill stdout before startup so even a tiny coalesced payload blocks.
+        import fcntl
+        reader, writer = os.pipe()
+        original = fcntl.fcntl(writer, fcntl.F_GETFL)
+        fcntl.fcntl(writer, fcntl.F_SETFL, original | os.O_NONBLOCK)
+        filled = 0
+        try:
+            while True:
+                filled += os.write(writer, b'P' * 4096)
+        except BlockingIOError:
+            pass
+        fcntl.fcntl(writer, fcntl.F_SETFL, original)
+        payload = bytes(range(256)) * 16
+        uploaded = bytearray()
+        errors = []
+        sent = threading.Event()
+        received = threading.Event()
+        with socket.socket() as listener:
+            listener.bind(('127.0.0.1', 0))
+            listener.listen(1)
+            listener.settimeout(3)
+            def serve():
+                try:
+                    with listener.accept()[0] as conn:
+                        conn.settimeout(3)
+                        request = b''
+                        while b'\r\n\r\n' not in request:
+                            part = conn.recv(4096)
+                            if not part:
+                                raise AssertionError('missing CONNECT request')
+                            request += part
+                        conn.sendall(b'HTTP/1.1 200 OK\r\n\r\n' + payload)
+                        conn.shutdown(socket.SHUT_WR)
+                        sent.set()
+                        while True:
+                            part = conn.recv(4096)
+                            if not part:
+                                break
+                            uploaded.extend(part)
+                        received.set()
+                except Exception as exc:
+                    errors.append(exc)
+            thread = threading.Thread(target=serve)
+            thread.start()
+            p = subprocess.Popen([self.binary, '127.0.0.1', str(listener.getsockname()[1]),
+                                  'example.test', '22'], stdin=subprocess.PIPE,
+                                 stdout=writer, stderr=subprocess.PIPE)
+            try:
+                self.assertTrue(sent.wait(2))
+                # Exceed the compiled 300ms setup deadline without draining stdout.
+                time.sleep(0.5)
+                self.assertIsNone(p.poll(), 'tunnel output must not use setup deadline')
+                p.stdin.write(b'upstream while stdout blocked')
+                p.stdin.close()
+                self.assertTrue(received.wait(2), 'downstream backpressure blocked upstream')
+                self.assertEqual(uploaded, b'upstream while stdout blocked')
+                output = bytearray()
+                while len(output) < filled + len(payload):
+                    import select
+                    self.assertTrue(select.select([reader], [], [], 2)[0])
+                    output.extend(os.read(reader, filled + len(payload) - len(output)))
+                self.assertEqual(output, b'P' * filled + payload)
+                self.assertEqual(p.wait(timeout=2), 0)
+                self.assertEqual(p.stderr.read(), b'')
+                self.assertEqual(fcntl.fcntl(writer, fcntl.F_GETFL), original)
+                self.assertFalse(errors, errors)
+            finally:
+                if p.poll() is None:
+                    p.kill()
+                p.wait()
+                p.stdin.close()
+                p.stderr.close()
+                os.close(reader)
+                os.close(writer)
+                thread.join(timeout=4)
+
+    def test_remote_half_close_accepts_delayed_upstream(self):
+        # Exercise the real CLI, not just the extracted relay harness.
+        with socket.socket() as listener:
+            listener.bind(('127.0.0.1', 0))
+            listener.listen(1)
+            listener.settimeout(3)
+            p = subprocess.Popen([self.binary, '127.0.0.1', str(listener.getsockname()[1]),
+                                  'example.test', '22'], stdin=subprocess.PIPE,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            assert p.stdin is not None and p.stdout is not None and p.stderr is not None
+            try:
+                with listener.accept()[0] as conn:
+                    conn.settimeout(3)
+                    request = bytearray()
+                    while not request.endswith(b'\r\n\r\n'):
+                        part = conn.recv(4096)
+                        self.assertTrue(part)
+                        request.extend(part)
+                    conn.sendall(b'HTTP/1.1 200 OK\r\n\r\nremote finished')
+                    conn.shutdown(socket.SHUT_WR)
+                    import select
+                    self.assertTrue(select.select([p.stdout], [], [], 2)[0])
+                    self.assertEqual(p.stdout.read(len(b'remote finished')), b'remote finished')
+                    time.sleep(0.1)
+                    self.assertIsNone(p.poll(), 'remote EOF closed live upstream')
+                    p.stdin.write(b'delayed upstream')
+                    p.stdin.close()
+                    received = bytearray()
+                    while True:
+                        part = conn.recv(4096)
+                        if not part:
+                            break
+                        received.extend(part)
+                    self.assertEqual(received, b'delayed upstream')
+                self.assertEqual(p.wait(timeout=2), 0)
+                self.assertEqual(p.stdout.read(), b'')
+                self.assertEqual(p.stderr.read(), b'')
+            finally:
+                if p.poll() is None:
+                    p.kill()
+                p.wait()
+                for stream in (p.stdin, p.stdout, p.stderr):
+                    stream.close()
 
     def test_all_response_split_points(self):
         response = b'HTTP/1.1 200 OK\r\nX-Test: yes\r\n\r\n\x00SSH\xff'
