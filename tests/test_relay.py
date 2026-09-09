@@ -48,7 +48,7 @@ int main(int argc, char **argv) {
     memset(&timer, 0, sizeof(timer));
     timer.it_value.tv_usec = timer.it_interval.tv_usec = 1000;
     setitimer(ITIMER_REAL, &timer, NULL);
-    rc = relay(atoi(argv[1]));
+    rc = relay(atoi(argv[1]), NULL, 0);
     return rc;
 }
 '''
@@ -117,8 +117,14 @@ int main(int argc, char **argv) {
         with concurrent.futures.ThreadPoolExecutor() as pool:
             sender = pool.submit(lambda: (peer.sendall(payload), peer.shutdown(socket.SHUT_WR)))
             time.sleep(0.05)
-            self.assertEqual(proc.stdout.read(), payload)
+            self.assertEqual(proc.stdout.read(len(payload)), payload)
             sender.result(timeout=10)
+        time.sleep(0.1)
+        self.assertIsNone(proc.poll(), "remote SHUT_WR must leave upstream live")
+        proc.stdin.write(b"delayed upstream after remote EOF")
+        proc.stdin.close()
+        self.assertEqual(self.receive(peer), b"delayed upstream after remote EOF")
+        self.assertEqual(proc.stdout.read(), b"")
         self.assertEqual(proc.wait(timeout=5), 0)
 
     def duplex(self, high=False):
