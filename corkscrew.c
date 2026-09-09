@@ -11,6 +11,9 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <poll.h>
+#include <signal.h>
+#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -300,6 +303,221 @@ done:
 	return -1;
 }
 
+/* The limit includes the terminating CRLF CRLF, but not tunnel data. */
+#define HANDSHAKE_HEADER_LIMIT 16384
+#define HANDSHAKE_STATUS_LIMIT 4096
+#ifndef HANDSHAKE_TIMEOUT_MS
+#define HANDSHAKE_TIMEOUT_MS 10000
+#endif
+
+/* Recompute the remaining time on every retry, including EINTR. */
+static int handshake_wait(int fd, short events, const struct timespec *deadline)
+{
+	struct timespec now;
+	struct pollfd pfd;
+	long long remaining;
+	int result;
+
+	pfd.fd = fd;
+	pfd.events = events;
+	for (;;) {
+		if (clock_gettime(CLOCK_MONOTONIC, &now) < 0)
+			return -1;
+		remaining = (long long)(deadline->tv_sec - now.tv_sec) * 1000
+			+ (deadline->tv_nsec - now.tv_nsec + 999999) / 1000000;
+		if (remaining <= 0) {
+			errno = ETIMEDOUT;
+			return -1;
+		}
+		pfd.revents = 0;
+		result = poll(&pfd, 1, (int)remaining);
+		if (result < 0 && errno == EINTR)
+			continue;
+		if (result < 0)
+			return -1;
+		if (result == 0)
+			continue;
+		if (pfd.revents & POLLNVAL) {
+			errno = EBADF;
+			return -1;
+		}
+		/* Read on HUP to drain any bytes received before the close. */
+		if (pfd.revents & (events | POLLERR | POLLHUP))
+			return 0;
+	}
+}
+
+static int handshake_write(int fd, const void *buffer, size_t length,
+		const struct timespec *deadline)
+{
+	const unsigned char *bytes = buffer;
+	size_t offset = 0;
+	ssize_t count;
+
+	while (offset < length) {
+		if (handshake_wait(fd, POLLOUT, deadline) < 0)
+			return -1;
+		count = write(fd, bytes + offset, length - offset);
+		if (count < 0) {
+			if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+				continue;
+			return -1;
+		}
+		if (count == 0) {
+			errno = EIO;
+			return -1;
+		}
+		offset += (size_t)count;
+	}
+	return 0;
+}
+
+static int handshake_token(unsigned char c)
+{
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9') ||
+		(c != 0 && strchr("!#$%&'*+-.^_`|~", c) != NULL);
+}
+
+/* No network bytes are interpreted as NUL-terminated strings. */
+static int handshake_status(const unsigned char *header, size_t length)
+{
+	size_t end = 0, pos, colon, i;
+	int code;
+
+	while (end + 1 < length &&
+		!(header[end] == '\r' && header[end + 1] == '\n'))
+		end++;
+	if (end < 13 || end > HANDSHAKE_STATUS_LIMIT || end + 1 >= length ||
+		memcmp(header, "HTTP/1.", 7) != 0 ||
+		(header[7] != '0' && header[7] != '1') || header[8] != ' ' ||
+		header[9] < '1' || header[9] > '5' ||
+		header[10] < '0' || header[10] > '9' ||
+		header[11] < '0' || header[11] > '9' || header[12] != ' ')
+		return -1;
+	for (i = 13; i < end; i++)
+		if ((header[i] < 32 && header[i] != '\t') || header[i] == 127)
+			return -1;
+	code = (header[9] - '0') * 100 + (header[10] - '0') * 10 + header[11] - '0';
+	pos = end + 2;
+	while (pos + 1 < length) {
+		if (header[pos] == '\r' && header[pos + 1] == '\n')
+			return pos + 2 == length ? code : -1;
+		end = pos;
+		while (end + 1 < length &&
+			!(header[end] == '\r' && header[end + 1] == '\n'))
+			end++;
+		if (end + 1 >= length)
+			return -1;
+		colon = pos;
+		while (colon < end && handshake_token(header[colon]))
+			colon++;
+		if (colon == pos || colon == end || header[colon] != ':')
+			return -1;
+		for (i = colon + 1; i < end; i++)
+			if ((header[i] < 32 && header[i] != '\t') || header[i] == 127)
+				return -1;
+		pos = end + 2;
+	}
+	return -1;
+}
+
+/* Setup owns only the proxy socket, never stdin. The single absolute deadline
+ * covers request writes, header reads and forwarding coalesced tunnel bytes.
+ * Restore descriptor flags and SIGPIPE disposition before entering the relay.
+ * DNS/TCP connect and relay lifetime are deliberately outside this deadline. */
+static int perform_handshake(int csock, const char *uri)
+{
+	unsigned char header[HANDSHAKE_HEADER_LIMIT];
+	size_t used = 0, scan = 0, end = 0;
+	ssize_t count;
+	struct timespec deadline;
+	struct sigaction ignore, previous;
+	int socket_flags = -1, stdout_flags = -1, signal_changed = 0;
+	int result = -1, saved_errno, code;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &deadline) < 0)
+		goto done;
+	deadline.tv_sec += HANDSHAKE_TIMEOUT_MS / 1000;
+	deadline.tv_nsec += (HANDSHAKE_TIMEOUT_MS % 1000) * 1000000L;
+	if (deadline.tv_nsec >= 1000000000L) {
+		deadline.tv_sec++;
+		deadline.tv_nsec -= 1000000000L;
+	}
+	memset(&ignore, 0, sizeof(ignore));
+	ignore.sa_handler = SIG_IGN;
+	sigemptyset(&ignore.sa_mask);
+	if (sigaction(SIGPIPE, &ignore, &previous) < 0)
+		goto done;
+	signal_changed = 1;
+	socket_flags = fcntl(csock, F_GETFL);
+	if (socket_flags < 0 || fcntl(csock, F_SETFL, socket_flags | O_NONBLOCK) < 0)
+		goto done;
+	if (handshake_write(csock, uri, strlen(uri), &deadline) < 0)
+		goto done;
+	for (;;) {
+		if (used == sizeof(header)) {
+			errno = EMSGSIZE;
+			goto done;
+		}
+		if (handshake_wait(csock, POLLIN, &deadline) < 0)
+			goto done;
+		count = read(csock, header + used, sizeof(header) - used);
+		if (count < 0) {
+			if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+				continue;
+			goto done;
+		}
+		if (count == 0) {
+			errno = ECONNRESET;
+			goto done;
+		}
+		used += (size_t)count;
+		/* Retain three bytes of overlap for a split terminator. */
+		for (; scan + 3 < used; scan++) {
+			if (memcmp(header + scan, "\r\n\r\n", 4) == 0) {
+				end = scan + 4;
+				break;
+			}
+		}
+		if (end != 0)
+			break;
+	}
+	code = handshake_status(header, end);
+	if (code < 200 || code >= 300) {
+		if (code < 0)
+			fprintf(stderr, "Malformed HTTP CONNECT response\n");
+		else
+			fprintf(stderr, "Proxy rejected CONNECT: HTTP %d\n", code);
+		errno = EPROTO;
+		goto done;
+	}
+	if (used > end) {
+		stdout_flags = fcntl(STDOUT_FILENO, F_GETFL);
+		if (stdout_flags < 0 ||
+			fcntl(STDOUT_FILENO, F_SETFL, stdout_flags | O_NONBLOCK) < 0 ||
+			handshake_write(STDOUT_FILENO, header + end, used - end, &deadline) < 0)
+			goto done;
+	}
+	result = 0;
+ done:
+	saved_errno = errno;
+	if (stdout_flags >= 0 && fcntl(STDOUT_FILENO, F_SETFL, stdout_flags) < 0 && result == 0) {
+		saved_errno = errno;
+		result = -1;
+	}
+	if (socket_flags >= 0 && fcntl(csock, F_SETFL, socket_flags) < 0 && result == 0) {
+		saved_errno = errno;
+		result = -1;
+	}
+	if (signal_changed && sigaction(SIGPIPE, &previous, NULL) < 0 && result == 0) {
+		saved_errno = errno;
+		result = -1;
+	}
+	errno = saved_errno;
+	return result;
+}
+
 #ifdef ANSI_FUNC
 int main (int argc, char *argv[])
 #else
@@ -309,14 +527,14 @@ char *argv[];
 #endif
 {
 #ifdef ANSI_FUNC
-	char uri[BUFSIZE] = "", buffer[BUFSIZE] = "", version[BUFSIZE] = "", descr[BUFSIZE] = "";
+	char uri[BUFSIZE] = "", buffer[BUFSIZE] = "";
 #else
-	char uri[BUFSIZE], buffer[BUFSIZE], version[BUFSIZE], descr[BUFSIZE];
+	char uri[BUFSIZE], buffer[BUFSIZE];
 #endif
 	char *host = NULL, *desthost = NULL, *destport = NULL;
 	char *up = NULL;
-	int port, destination_port, request_length, sent, setup, code, csock;
-	fd_set rfd, sfd;
+	int port, destination_port, request_length, csock;
+	fd_set rfd;
 	struct timeval tv;
 	ssize_t len;
 	FILE *fp;
@@ -397,48 +615,21 @@ char *argv[];
 		exit(-1);
 	}
 
-	sent = 0;
-	setup = 0;
+	if (perform_handshake(csock, uri) < 0) {
+		fprintf(stderr, "HTTP CONNECT handshake failed: %s\n", strerror(errno));
+		close(csock);
+		return EXIT_FAILURE;
+	}
 	for(;;) {
-		FD_ZERO(&sfd);
 		FD_ZERO(&rfd);
-		if ((setup == 0) && (sent == 0)) {
-			FD_SET(csock, &sfd);
-		}
 		FD_SET(csock, &rfd);
 		FD_SET(0, &rfd);
 
 		tv.tv_sec = 5;
 		tv.tv_usec = 0;
 
-		if(select(csock+1,&rfd,&sfd,NULL,&tv) == -1) break;
+		if(select(csock+1,&rfd,NULL,NULL,&tv) == -1) break;
 
-		/* there's probably a better way to do this */
-		if (setup == 0) {
-			if (FD_ISSET(csock, &rfd)) {
-				len = read(csock, buffer, sizeof(buffer));
-				if (len<=0)
-					break;
-				else {
-					sscanf(buffer,"%s%d%[^\n]",version,&code,descr);
-					if ((strncmp(version,"HTTP/",5) == 0) && (code >= 200) && (code < 300))
-						setup = 1;
-					else {
-						if ((strncmp(version,"HTTP/",5) == 0) && (code >= 407)) {
-						}
-						fprintf(stderr, "Proxy could not open connnection to %s: %s\n", desthost, descr);
-						exit(-1);
-					}
-				}
-			}
-			if (FD_ISSET(csock, &sfd) && (sent == 0)) {
-				len = write(csock, uri, strlen(uri));
-				if (len<=0)
-					break;
-				else
-					sent = 1;
-			}
-		} else {
 			if (FD_ISSET(csock, &rfd)) {
 				len = read(csock, buffer, sizeof(buffer));
 				if (len<=0) break;
@@ -452,7 +643,6 @@ char *argv[];
 				len = write(csock, buffer, len);
 				if (len<=0) break;
 			}
-		}
 	}
 	exit(0);
 }
