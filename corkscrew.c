@@ -518,6 +518,196 @@ static int perform_handshake(int csock, const char *uri)
 	return result;
 }
 
+/* Buffered duplex relay. Keep each direction independent and bounded. */
+struct relay_buffer {
+	unsigned char data[65536];
+	size_t offset, length;
+};
+
+static int relay_fcntl(int fd, int command, int flags)
+{
+	int result;
+	do {
+		result = fcntl(fd, command, flags);
+	} while (result < 0 && errno == EINTR);
+	return result;
+}
+
+/* Return -1 for failure, 0 for EOF, 1 for progress or retry. */
+static int relay_read(int fd, struct relay_buffer *buffer)
+{
+	ssize_t count = read(fd, buffer->data, sizeof(buffer->data));
+	if (count > 0) {
+		buffer->offset = 0;
+		buffer->length = (size_t)count;
+		return 1;
+	}
+	if (count == 0)
+		return 0;
+	if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+		return 1;
+	return -1;
+}
+
+static int relay_write(int fd, struct relay_buffer *buffer)
+{
+	ssize_t count = write(fd, buffer->data + buffer->offset,
+	    buffer->length);
+	if (count > 0) {
+		buffer->offset += (size_t)count;
+		buffer->length -= (size_t)count;
+		return 0;
+	}
+	if (count < 0 && (errno == EINTR || errno == EAGAIN ||
+	    errno == EWOULDBLOCK))
+		return 0;
+	if (count == 0)
+		errno = EIO;
+	return -1;
+}
+
+static int relay(int csock)
+{
+	struct relay_buffer upstream = {{0}, 0, 0};
+	struct relay_buffer downstream = {{0}, 0, 0};
+	struct pollfd ready[3];
+	struct sigaction ignore, original_signal;
+	int fds[3], original_flags[3], changed[3] = {0, 0, 0};
+	int input_eof = 0, socket_eof = 0, write_shutdown = 0;
+	int signal_changed = 0, error = 0, i, result;
+
+	fds[0] = STDIN_FILENO;
+	fds[1] = STDOUT_FILENO;
+	fds[2] = csock;
+	memset(&ignore, 0, sizeof(ignore));
+	ignore.sa_handler = SIG_IGN;
+	sigemptyset(&ignore.sa_mask);
+	if (sigaction(SIGPIPE, &ignore, &original_signal) < 0) {
+		error = errno;
+		goto cleanup;
+	}
+	signal_changed = 1;
+	/* Snapshot all flags before changing any: stdin/out may share an OFD. */
+	for (i = 0; i < 3; i++) {
+		original_flags[i] = relay_fcntl(fds[i], F_GETFL, 0);
+		if (original_flags[i] < 0) {
+			error = errno;
+			goto cleanup;
+		}
+	}
+	for (i = 0; i < 3; i++) {
+		if (!(original_flags[i] & O_NONBLOCK)) {
+			if (relay_fcntl(fds[i], F_SETFL,
+			    original_flags[i] | O_NONBLOCK) < 0) {
+				error = errno;
+				goto cleanup;
+			}
+			changed[i] = 1;
+		}
+	}
+
+	for (;;) {
+		if (input_eof && upstream.length == 0 && !write_shutdown) {
+			do {
+				result = shutdown(csock, SHUT_WR);
+			} while (result < 0 && errno == EINTR);
+			if (result < 0) {
+				error = errno;
+				goto cleanup;
+			}
+			write_shutdown = 1;
+		}
+		/* Remote EOF ends the session, but never discard queued output
+		 * or input already accepted from the caller. */
+		if (socket_eof && downstream.length == 0 && upstream.length == 0)
+			break;
+
+		ready[0].fd = (!input_eof && !socket_eof && upstream.length == 0)
+		    ? STDIN_FILENO : -1;
+		ready[0].events = POLLIN;
+		ready[1].fd = downstream.length ? STDOUT_FILENO : -1;
+		ready[1].events = POLLOUT;
+		ready[2].events = 0;
+		if (!socket_eof && downstream.length == 0)
+			ready[2].events |= POLLIN;
+		if (upstream.length)
+			ready[2].events |= POLLOUT;
+		/* A disabled fd must be -1: events=0 still reports POLLHUP. */
+		ready[2].fd = ready[2].events ? csock : -1;
+		result = poll(ready, 3, -1);
+		if (result < 0) {
+			if (errno == EINTR)
+				continue;
+			error = errno;
+			goto cleanup;
+		}
+		for (i = 0; i < 3; i++) {
+			if (ready[i].revents & POLLNVAL) {
+				error = EBADF;
+				goto cleanup;
+			}
+		}
+		if (ready[2].revents & POLLERR) {
+			int socket_error = 0;
+			socklen_t size = sizeof(socket_error);
+			if (getsockopt(csock, SOL_SOCKET, SO_ERROR, &socket_error, &size) < 0)
+				error = errno;
+			else
+				error = socket_error ? socket_error : EIO;
+			goto cleanup;
+		}
+		if (downstream.length &&
+		    (ready[1].revents & (POLLOUT | POLLERR | POLLHUP))) {
+			if (relay_write(STDOUT_FILENO, &downstream) < 0) {
+				error = errno;
+				goto cleanup;
+			}
+		}
+		if (upstream.length &&
+		    (ready[2].revents & (POLLOUT | POLLHUP))) {
+			if (relay_write(csock, &upstream) < 0) {
+				error = errno;
+				goto cleanup;
+			}
+		}
+		if (!socket_eof && downstream.length == 0 &&
+		    (ready[2].revents & (POLLIN | POLLHUP))) {
+			result = relay_read(csock, &downstream);
+			if (result < 0) {
+				error = errno;
+				goto cleanup;
+			}
+			if (result == 0)
+				socket_eof = 1;
+		}
+		if (!socket_eof && !input_eof && upstream.length == 0 &&
+		    (ready[0].revents & (POLLIN | POLLHUP | POLLERR))) {
+			result = relay_read(STDIN_FILENO, &upstream);
+			if (result < 0) {
+				error = errno;
+				goto cleanup;
+			}
+			if (result == 0)
+				input_eof = 1;
+		}
+	}
+
+cleanup:
+	/* O_NONBLOCK belongs to the open file description, not this process. */
+	for (i = 2; i >= 0; i--) {
+		if (changed[i] && relay_fcntl(fds[i], F_SETFL, original_flags[i]) < 0 && !error)
+			error = errno;
+	}
+	if (signal_changed && sigaction(SIGPIPE, &original_signal, NULL) < 0 && !error)
+		error = errno;
+	if (error) {
+		fprintf(stderr, "corkscrew: relay: %s\n", strerror(error));
+		return 1;
+	}
+	return 0;
+}
+/* End buffered duplex relay. */
+
 #ifdef ANSI_FUNC
 int main (int argc, char *argv[])
 #else
@@ -527,16 +717,13 @@ char *argv[];
 #endif
 {
 #ifdef ANSI_FUNC
-	char uri[BUFSIZE] = "", buffer[BUFSIZE] = "";
+	char uri[BUFSIZE] = "";
 #else
-	char uri[BUFSIZE], buffer[BUFSIZE];
+	char uri[BUFSIZE];
 #endif
 	char *host = NULL, *desthost = NULL, *destport = NULL;
 	char *up = NULL;
 	int port, destination_port, request_length, csock;
-	fd_set rfd;
-	struct timeval tv;
-	ssize_t len;
 	FILE *fp;
 
 	if ((argc == 5) || (argc == 6)) {
@@ -616,33 +803,13 @@ char *argv[];
 	}
 
 	if (perform_handshake(csock, uri) < 0) {
+		clear_secret(uri, sizeof(uri));
 		fprintf(stderr, "HTTP CONNECT handshake failed: %s\n", strerror(errno));
 		close(csock);
 		return EXIT_FAILURE;
 	}
-	for(;;) {
-		FD_ZERO(&rfd);
-		FD_SET(csock, &rfd);
-		FD_SET(0, &rfd);
-
-		tv.tv_sec = 5;
-		tv.tv_usec = 0;
-
-		if(select(csock+1,&rfd,NULL,NULL,&tv) == -1) break;
-
-			if (FD_ISSET(csock, &rfd)) {
-				len = read(csock, buffer, sizeof(buffer));
-				if (len<=0) break;
-				len = write(1, buffer, len);
-				if (len<=0) break;
-			}
-
-			if (FD_ISSET(0, &rfd)) {
-				len = read(0, buffer, sizeof(buffer));
-				if (len<=0) break;
-				len = write(csock, buffer, len);
-				if (len<=0) break;
-			}
-	}
-	exit(0);
+	clear_secret(uri, sizeof(uri));
+	int result = relay(csock);
+	close(csock);
+	return result;
 }
