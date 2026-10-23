@@ -14,7 +14,8 @@ All notable changes to Corkscrew are documented here.
   and tracked Autotools-generated files. Build from a Git checkout with
   `autoreconf -fi` as documented.
 - Replace the stale maintainer email in the help banner with the project URL,
-  and update historical `ChangeLog` entries to `pat@patpadgett.com`.
+  and update historical changelog entries to `pat@patpadgett.com`.
+- Merge the legacy `ChangeLog` into this file and remove the separate file.
 - Replace the Base64 encoder with an independent implementation. The
   `Proxy-Authorization` wire format is unchanged.
 
@@ -105,3 +106,42 @@ compatibility options, and expands continuous integration.
 The `2.0` tag records the pre-hardening release baseline. The changes above
 describe the 3.0 release. The historical `v2.0` tag is retained unchanged for
 older release references.
+
+## Historical changes
+
+The following entries are preserved from the original plain-text changelog
+and reformatted for this Markdown file. They predate the 2.0 baseline.
+
+### 2001-08-24 13:21:23 - Pat Padgett
+
+- Merged proxy authentication patches from Karel Dudasek.
+- Cleaned up `configure.in` and `Makefile.am`.
+- Added support for non-ANSI/K&R C compilers.
+
+### 2001-06-14 12:05:24 - Pat Padgett
+
+- Added timer for `select` (thanks Robert Loomans).
+- Removed `xmit()` function.
+- Win32 support now stable.
+
+### 2001-04-17 14:30:23 - Pat Padgett
+
+- Fixed glaring bug with `getopt`.
+- Command-line syntax has changed. (View `README`.)
+- Corkscrew was compiled on Win32.
+- Added error reporting if proxy-to-destination connection unsuccessful.
+
+### 2001-04-11 10:27:32 - Pat Padgett
+
+- Added support for function prototypes (for HPUX compatibility).
+- Changed buffer size declaration (now `#define`d).
+
+### 2001-04-10 23:20:21 - Pat Padgett
+
+- Changed `strncat` to `strncpy` during URI setup.
+
+### 2001-04-10 16:26:43 - Pat Padgett
+
+- Added GPL license to distribution.
+- Added support for GNU autoconf and automake.
+- Corkscrew now compiles on Solaris with GNU tools.

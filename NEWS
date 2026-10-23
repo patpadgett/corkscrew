@@ -8,6 +8,7 @@ Unreleased
   change remain available under their original GPL terms.
 * Remove obsolete Autotools-generated files, the generic INSTALL file, and the
   redundant AUTHORS file. Build from a Git checkout with autoreconf -fi.
+* Merge the legacy ChangeLog into CHANGELOG.md and remove the separate file.
 
 3.0 - 2026-10-23
 ----------------
