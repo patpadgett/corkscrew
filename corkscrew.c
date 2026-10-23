@@ -12,6 +12,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,17 +33,18 @@ char linefeed[] = "\x0A\x0D\x0A\x0D";
 */
 char linefeed[] = "\r\n\r\n"; /* it is better and tested with oops & squid */
 
-/*
-** base64.c
-** Copyright (C) 2001 Tamas SZERB <toma@rulez.org>
-*/
-
-static const char base64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+/* Base64 encoding for the Proxy-Authorization header. */
+static const char base64_alphabet[] =
+	"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /* Include the terminator; check before either rounding or multiplying. */
 static int base64_output_size(size_t len, size_t *size)
 {
-	size_t groups = len / 3 + (len % 3 != 0);
+	size_t groups;
+
+	if (len > (size_t)-3)
+		return 0;
+	groups = (len + 2) / 3;
 	if (groups > ((size_t)-1 - 1) / 4)
 		return 0;
 	*size = groups * 4 + 1;
@@ -64,17 +66,28 @@ char *base64_encode(const char *in)
 	buf = malloc(size);
 	if (buf == NULL)
 		return NULL;
-	for (i = 0; i < len;) {
-		size_t remaining = len - i;
-		unsigned int value = (unsigned int)src[i++] << 16;
-		if (remaining > 1)
-			value |= (unsigned int)src[i++] << 8;
-		if (remaining > 2)
-			value |= (unsigned int)src[i++];
-		buf[out++] = base64[(value >> 18) & 63];
-		buf[out++] = base64[(value >> 12) & 63];
-		buf[out++] = remaining > 1 ? base64[(value >> 6) & 63] : '=';
-		buf[out++] = remaining > 2 ? base64[value & 63] : '=';
+
+	for (i = 0; len - i >= 3; i += 3) {
+		uint32_t value = ((uint32_t)src[i] << 16) |
+		    ((uint32_t)src[i + 1] << 8) | (uint32_t)src[i + 2];
+		buf[out++] = base64_alphabet[(value >> 18) & 63];
+		buf[out++] = base64_alphabet[(value >> 12) & 63];
+		buf[out++] = base64_alphabet[(value >> 6) & 63];
+		buf[out++] = base64_alphabet[value & 63];
+	}
+	if (i < len) {
+		uint32_t value = (uint32_t)src[i] << 16;
+		buf[out++] = base64_alphabet[(value >> 18) & 63];
+		if (i + 1 < len) {
+			value |= (uint32_t)src[i + 1] << 8;
+			buf[out++] = base64_alphabet[(value >> 12) & 63];
+			buf[out++] = base64_alphabet[(value >> 6) & 63];
+			buf[out++] = '=';
+		} else {
+			buf[out++] = base64_alphabet[(value >> 12) & 63];
+			buf[out++] = '=';
+			buf[out++] = '=';
+		}
 	}
 	buf[out] = '\0';
 	return buf;

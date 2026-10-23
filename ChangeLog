@@ -7,6 +7,8 @@ Fri Oct 23 2026  Corkscrew maintainers
 	  Autotools-generated files. Build from a checkout with autoreconf -fi.
 	* Replaced the maintainer email in the help banner with the project
 	  URL and updated historical ChangeLog entries to pat@patpadgett.com.
+	* Replaced the Base64 encoder with an independent implementation; the
+	  Proxy-Authorization wire format is unchanged.
 
 Thu Oct 22 2026  Corkscrew maintainers
 	* Integrated handshake output with the duplex relay, preserving
@@ -45,7 +47,6 @@ Thu Jun 14 12:05:24 2001  Pat Padgett (pat@patpadgett.com)
 	* Removed xmit() function
 	* Win32 support now STABLE
 Fri Aug 24 13:21:23 2001  Pat Padgett (pat@patpadgett.com)
-	* Merged patches from Tamas Szerb and Karel Dudasek
-	  for proxy authentication.
+	* Merged proxy authentication patches from Karel Dudasek.
 	* Cleaned up configure.in and Makefile.am.
 	* Added support for non-ANSI/K&R C compilers.

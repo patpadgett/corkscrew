@@ -15,6 +15,8 @@ All notable changes to Corkscrew are documented here.
   `autoreconf -fi` as documented.
 - Replace the stale maintainer email in the help banner with the project URL,
   and update historical `ChangeLog` entries to `pat@patpadgett.com`.
+- Replace the Base64 encoder with an independent implementation. The
+  `Proxy-Authorization` wire format is unchanged.
 
 ## 3.0 - 2026-10-23
 
