@@ -1,11 +1,32 @@
+# Build products
 /Makefile
 /config.h
 /config.log
 /config.status
 /stamp-h1
-/autom4te.cache/
 /.deps/
 /corkscrew
 /*.o
-/*~
+/test-suite.log
+/tests/*.log
+/tests/*.trs
+/corkscrew-*.tar.gz
+/corkscrew-*/
+
+# Autotools-generated files; run ./bootstrap or autoreconf -fi
+/aclocal.m4
+/autom4te.cache/
+/compile
+/config.guess
+/config.in
+/config.sub
+/configure
+/install-sh
+/Makefile.in
+/missing
+/test-driver
+
+# Editor and Python artifacts
+*~
 __pycache__/
+*.pyc

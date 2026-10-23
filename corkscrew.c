@@ -163,7 +163,8 @@ static void print_version(void)
 
 static void usage(FILE *stream)
 {
-	fprintf(stream, "corkscrew %s (agroman@agroman.net)\n\n", VERSION);
+	fprintf(stream, "corkscrew %s <https://github.com/patpadgett/corkscrew>\n\n",
+	    VERSION);
 	fprintf(stream, "usage: corkscrew [options] <proxyhost> <proxyport> "
 	    "<desthost> <destport> [authfile]\n\n");
 	fprintf(stream, "options:\n");

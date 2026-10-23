@@ -135,3 +135,14 @@ signal received during the relay.
 See [CHANGELOG.md](CHANGELOG.md) for the 3.0 changes and the 2.0 baseline
 note. The `2.0` and `3.0` Git tags identify the baseline and this release;
 the older historical `v2.0` tag is retained unchanged.
+
+## License
+
+Corkscrew is released under the [MIT License](LICENSE).
+
+Previously published releases were distributed under the GNU General Public
+License, version 2 or later; those releases remain available under their
+original terms.
+
+Corkscrew was originally written by Pat Padgett. See the Git history for
+contributors.

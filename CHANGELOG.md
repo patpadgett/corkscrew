@@ -2,6 +2,20 @@
 
 All notable changes to Corkscrew are documented here.
 
+## Unreleased
+
+### Licensing and repository cleanup
+
+- Relicense the project under the MIT License. Previously published releases
+  remain available under the GNU General Public License, version 2 or later.
+- Replace `COPYING` with `LICENSE`, document the license in `README.md` and
+  `corkscrew(1)`, and include the license in source distributions.
+- Remove the redundant `AUTHORS` file, the generic Autotools `INSTALL` file,
+  and tracked Autotools-generated files. Build from a Git checkout with
+  `autoreconf -fi` as documented.
+- Replace the stale maintainer email in the help banner with the project URL,
+  and update historical `ChangeLog` entries to `pat@patpadgett.com`.
+
 ## 3.0 - 2026-10-23
 
 This release hardens the CONNECT client and relay, adds command-line

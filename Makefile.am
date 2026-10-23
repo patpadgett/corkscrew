@@ -4,7 +4,8 @@ bin_PROGRAMS = corkscrew
 corkscrew_SOURCES = corkscrew.c
 man_MANS = corkscrew.1
 
-EXTRA_DIST = README.md CHANGELOG.md SECURITY.md TODO bootstrap corkscrew.1 \
+EXTRA_DIST = README.md CHANGELOG.md SECURITY.md TODO LICENSE \
+	bootstrap corkscrew.1 \
 	tests/base64_harness.c tests/handshake_faults.c tests/fuzz_handshake.c \
 	tests/network_harness.c tests/test_auth.py tests/test_cli.py \
 	tests/test_handshake.py tests/test_network.py \

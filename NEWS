@@ -1,6 +1,14 @@
 Corkscrew NEWS
 ==============
 
+Unreleased
+----------
+
+* Relicense Corkscrew under the MIT License. Releases published before this
+  change remain available under their original GPL terms.
+* Remove obsolete Autotools-generated files, the generic INSTALL file, and the
+  redundant AUTHORS file. Build from a Git checkout with autoreconf -fi.
+
 3.0 - 2026-10-23
 ----------------
 

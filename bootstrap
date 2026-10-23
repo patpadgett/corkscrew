@@ -2,8 +2,8 @@
 set -eu
 
 # Regenerate the Autotools files. Keep this script idempotent so maintainers
-# can run it after changing configure.ac or Makefile.am. Do not delete
-# INSTALL, config.guess or config.sub: automake may not recreate files that
-# are not required by the current configure.ac.
+# can run it after changing configure.ac or Makefile.am. Generated files are
+# intentionally not tracked, so a fresh checkout must run this script (or
+# autoreconf -fi) before ./configure.
 rm -rf autom4te.cache
 exec autoreconf -fi

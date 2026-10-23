@@ -1,3 +1,13 @@
+Fri Oct 23 2026  Corkscrew maintainers
+	* Relicensed the project under the MIT License; previously published
+	  releases remain available under their original GPL terms.
+	* Replaced COPYING with LICENSE, documented the license in README.md
+	  and corkscrew(1), and included LICENSE in source distributions.
+	* Removed AUTHORS, the generic INSTALL file, and tracked
+	  Autotools-generated files. Build from a checkout with autoreconf -fi.
+	* Replaced the maintainer email in the help banner with the project
+	  URL and updated historical ChangeLog entries to pat@patpadgett.com.
+
 Thu Oct 22 2026  Corkscrew maintainers
 	* Integrated handshake output with the duplex relay, preserving
 	  coalesced tunnel bytes and remote half-close semantics.
@@ -16,25 +26,25 @@ Thu Oct 22 2026  Corkscrew maintainers
 	* Made README.md canonical, added CHANGELOG.md, and updated the
 	  manual page, NEWS, and security documentation.
 
-Tue Apr 10 16:26:43 2001  Pat Padgett (agroman@agroman.net)
+Tue Apr 10 16:26:43 2001  Pat Padgett (pat@patpadgett.com)
 	* Added GPL license to distribution.
 	* Added support for GNU autoconf and automake.
 	* corkscrew now compiles on Solaris with GNU tools.
-Tue Apr 10 23:20:21 2001  Pat Padgett (agroman@agroman.net)
+Tue Apr 10 23:20:21 2001  Pat Padgett (pat@patpadgett.com)
 	* Changed strncat to strncpy during uri setup. 
-Wed Apr 11 10:27:32 2001  Pat Padgett (agroman@agroman.net)
+Wed Apr 11 10:27:32 2001  Pat Padgett (pat@patpadgett.com)
 	* Added support for function prototypes (for HPUX compat)
 	* Changed buffer size declaration (now #define'd)
-Tue Apr 17 14:30:23 2001  Pat Padgett (agroman@agroman.net)
+Tue Apr 17 14:30:23 2001  Pat Padgett (pat@patpadgett.com)
 	* Fixed glaring bug with getopt.
 	* Command line syntax has changed.  (view README)
 	* corkscrew was compiled on Win32
 	* Added error reporting if proxy->dest connection unsuccessful.
-Thu Jun 14 12:05:24 2001  Pat Padgett (agroman@agroman.net)
+Thu Jun 14 12:05:24 2001  Pat Padgett (pat@patpadgett.com)
 	* Added timer for select (THANKS Robert Loomans)
 	* Removed xmit() function
 	* Win32 support now STABLE
-Fri Aug 24 13:21:23 2001  Pat Padgett (agroman@agroman.net)
+Fri Aug 24 13:21:23 2001  Pat Padgett (pat@patpadgett.com)
 	* Merged patches from Tamas Szerb and Karel Dudasek
 	  for proxy authentication.
 	* Cleaned up configure.in and Makefile.am.
