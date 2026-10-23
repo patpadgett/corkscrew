@@ -1,11 +1,10 @@
-Minor Tweaks :
-* Some work has been done to get corkscrew to compile on old versions
-  of SunOS (primarily 4.1.3).  If someone want's this I might work on
-  it some more, otherwise I've damn near given up.
-* The code works, but it's probably not very efficient.  Planning on
-  spending some time to work on this.
+Remaining ideas
+===============
 
-Major Tweaks :
-* Add support for HTTP authentication.
-* Add support for WinGate proxies (uh, well... we'll see).
-
+* Revisit efficiency of the relay and handshake code only with measurements;
+  correctness and descriptor ownership take priority.
+* Consider optional support for WinGate and other non-standard proxies.
+* Consider optional TLS-to-proxy, NTLM/Digest, PAC, or config-file support
+  only if a concrete interoperability requirement justifies the added
+  dependencies and attack surface.
+* Historical SunOS 4.1.3 portability work is not maintained.

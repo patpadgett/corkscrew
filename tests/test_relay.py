@@ -7,6 +7,7 @@ import resource
 import shlex
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -14,6 +15,8 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@unittest.skipUnless(sys.platform.startswith("linux"),
+                     "GNU ld --wrap is required for fault injection")
 class RelayTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -30,8 +33,18 @@ class RelayTests(unittest.TestCase):
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 #include <sys/time.h>
+int __real_raise(int);
+int __wrap_raise(int sig) {
+    if (sig == SIGTSTP && getenv("RELAY_TEST_SUSPEND")) {
+        struct timespec delay = {0, 500000000};
+        while (nanosleep(&delay, &delay) < 0 && errno == EINTR) {}
+        return 0;
+    }
+    return __real_raise(sig);
+}
 '''
         harness += source[start:end]
         harness += '''
@@ -48,13 +61,13 @@ int main(int argc, char **argv) {
     memset(&timer, 0, sizeof(timer));
     timer.it_value.tv_usec = timer.it_interval.tv_usec = 1000;
     setitimer(ITIMER_REAL, &timer, NULL);
-    rc = relay(atoi(argv[1]));
+    rc = relay(atoi(argv[1]), NULL, 0);
     return rc;
 }
 '''
         (tmp / "relay.c").write_text(harness)
         cls.binary = str(tmp / "relay")
-        subprocess.run([os.environ.get("CC", "cc"), "-std=c99", "-D_POSIX_C_SOURCE=200809L", "-Wall", "-Wextra", "-Werror", "-O2", *shlex.split(os.environ.get("RELAY_TEST_CFLAGS", "")), str(tmp / "relay.c"), "-o", cls.binary], check=True)
+        subprocess.run([os.environ.get("CC", "cc"), "-std=c99", "-D_POSIX_C_SOURCE=200809L", "-Wall", "-Wextra", "-Werror", "-O2", *shlex.split(os.environ.get("RELAY_TEST_CFLAGS", "")), str(tmp / "relay.c"), "-Wl,--wrap=raise", "-o", cls.binary], check=True)
 
     @classmethod
     def tearDownClass(cls):
@@ -117,8 +130,14 @@ int main(int argc, char **argv) {
         with concurrent.futures.ThreadPoolExecutor() as pool:
             sender = pool.submit(lambda: (peer.sendall(payload), peer.shutdown(socket.SHUT_WR)))
             time.sleep(0.05)
-            self.assertEqual(proc.stdout.read(), payload)
+            self.assertEqual(proc.stdout.read(len(payload)), payload)
             sender.result(timeout=10)
+        time.sleep(0.1)
+        self.assertIsNone(proc.poll(), "remote SHUT_WR must leave upstream live")
+        proc.stdin.write(b"delayed upstream after remote EOF")
+        proc.stdin.close()
+        self.assertEqual(self.receive(peer), b"delayed upstream after remote EOF")
+        self.assertEqual(proc.stdout.read(), b"")
         self.assertEqual(proc.wait(timeout=5), 0)
 
     def duplex(self, high=False):
@@ -171,7 +190,8 @@ int main(int argc, char **argv) {
 
     def test_termination_restores_shared_flags(self):
         import signal
-        for signo in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        for signo in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP,
+                      signal.SIGQUIT):
             with self.subTest(signal=signo):
                 child, peer = socket.socketpair()
                 stdio, caller = socket.socketpair()
@@ -192,6 +212,45 @@ int main(int argc, char **argv) {
                         proc.kill(); proc.wait()
                     proc.stderr.close()
                     for sock in (child, peer, stdio, caller): sock.close()
+
+    def test_sigtstp_restores_flags_before_continue(self):
+        import signal
+        child, peer = socket.socketpair()
+        stdio, caller = socket.socketpair()
+        original = fcntl.fcntl(stdio, fcntl.F_GETFL)
+        env = dict(os.environ, RELAY_TEST_SUSPEND="1")
+        proc = subprocess.Popen(
+            [self.binary, str(child.fileno())],
+            stdin=stdio.fileno(), stdout=stdio.fileno(),
+            stderr=subprocess.PIPE, pass_fds=(child.fileno(),), env=env)
+        try:
+            deadline = time.monotonic() + 2
+            while not fcntl.fcntl(stdio, fcntl.F_GETFL) & os.O_NONBLOCK:
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(.005)
+            proc.send_signal(signal.SIGTSTP)
+            # The harness wraps raise() and holds the simulated suspension.
+            deadline = time.monotonic() + 2
+            while fcntl.fcntl(stdio, fcntl.F_GETFL) != original:
+                self.assertLess(time.monotonic(), deadline,
+                                "SIGTSTP did not restore shared flags")
+                time.sleep(.005)
+            self.assertEqual(fcntl.fcntl(stdio, fcntl.F_GETFL), original)
+            deadline = time.monotonic() + 2
+            while not fcntl.fcntl(stdio, fcntl.F_GETFL) & os.O_NONBLOCK:
+                self.assertLess(time.monotonic(), deadline,
+                                "resume did not reapply nonblocking mode")
+                time.sleep(.005)
+            proc.send_signal(signal.SIGTERM)
+            self.assertEqual(proc.wait(timeout=2), 128 + signal.SIGTERM)
+            self.assertEqual(fcntl.fcntl(stdio, fcntl.F_GETFL), original)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+            proc.stderr.close()
+            for sock in (child, peer, stdio, caller):
+                sock.close()
 
     def test_shared_stdio_open_file_description_restored(self):
         for nonblocking in (False, True):

@@ -1,3 +1,21 @@
+Thu Oct 22 2026  Corkscrew maintainers
+	* Integrated handshake output with the duplex relay, preserving
+	  coalesced tunnel bytes and remote half-close semantics.
+	* Added signal cleanup for SIGQUIT and SIGTSTP, prevented proxy
+	  socket collisions with standard descriptors, and centralized
+	  credential clearing and descriptor teardown.
+	* Enforced safe authentication-file permissions and types.
+	* Wired the Python regression suite into make check and distcheck,
+	  added strict CI builds and sanitizer coverage, and installed a
+	  corkscrew(1) manual page.
+	* Added --help, --version, --verbose, connect/handshake timeout
+	  options, --auth-file, inherited --auth-fd, and opt-in HTTP/1.1
+	  CONNECT headers.
+	* Added tinyproxy loopback integration, libFuzzer parser coverage,
+	  macOS portability CI, and release version 3.0.
+	* Made README.md canonical, added CHANGELOG.md, and updated the
+	  manual page, NEWS, and security documentation.
+
 Tue Apr 10 16:26:43 2001  Pat Padgett (agroman@agroman.net)
 	* Added GPL license to distribution.
 	* Added support for GNU autoconf and automake.

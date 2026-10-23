@@ -1,3 +1,9 @@
-rm aclocal.m4 configure config.in compile install-sh config.sub config.guess INSTALL Makefile.in missing config.in\~ 
+#!/bin/sh
+set -eu
+
+# Regenerate the Autotools files. Keep this script idempotent so maintainers
+# can run it after changing configure.ac or Makefile.am. Do not delete
+# INSTALL, config.guess or config.sub: automake may not recreate files that
+# are not required by the current configure.ac.
 rm -rf autom4te.cache
-autoreconf -fi && autoconf
+exec autoreconf -fi

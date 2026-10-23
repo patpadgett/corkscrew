@@ -1,0 +1,3 @@
+# Fuzzer inputs are raw protocol bytes, including CRLF and deliberate
+# trailing spaces. Do not normalize or inspect them as text.
+tests/fuzz_corpus/* binary

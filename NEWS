@@ -1,1 +1,36 @@
-No news is good news.  :)
+Corkscrew NEWS
+==============
+
+3.0 - 2026-10-23
+----------------
+
+* Deliver tunnel bytes that arrive coalesced with the CONNECT response
+  through the duplex relay instead of writing them to standard output during
+  setup, so a slow or closed standard output cannot break the handshake.
+* Preserve half-close semantics: a remote write shutdown no longer discards
+  input that the caller has not finished sending.
+* Never let the proxy socket alias standard input or standard output.
+  Reject closed standard input/output early and move low-numbered proxy
+  sockets above the standard error descriptor.
+* Handle SIGQUIT like SIGTERM, SIGINT, and SIGHUP. Handle SIGTSTP by
+  restoring shared descriptor flags before stopping and reapplying
+  nonblocking mode on resume.
+* Centralize teardown so credentials, the CONNECT request, and open
+  descriptors are cleared or closed on every normal exit path.
+* Require authentication files to be regular files with no group or other
+  permission bits. Read credentials without an uncleared stdio buffer.
+* Add regression coverage for slow stdout, coalesced response payloads,
+  remote half-close, closed stdio, signal cleanup, descriptor flags,
+  authentication-file permissions, and the built binary.
+* Run the regression suite from `make check`, include the tests and
+  documentation in `make dist`, and check `make distcheck`.
+* Install a `corkscrew(1)` manual page.
+* Build with stricter warnings and run the tests under AddressSanitizer and
+  UndefinedBehaviorSanitizer in CI. The network suite under `make check` now
+  exercises the built program rather than only temporary test builds.
+* Add `--help`, `--version`, `--verbose`, connect/handshake timeout options,
+  `--auth-file`, inherited `--auth-fd`, and opt-in HTTP/1.1 CONNECT headers.
+* Add a tinyproxy loopback integration test, a libFuzzer parser harness, and
+  macOS portability CI.
+
+See CHANGELOG.md for the complete 3.0 change list.

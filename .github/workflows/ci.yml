@@ -1,24 +1,93 @@
 name: Build and regression tests
-on: [push, pull_request]
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
 permissions:
   contents: read
+
 jobs:
   linux:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
+      fail-fast: false
       matrix:
         compiler: [gcc, clang]
+    env:
+      CC: ${{ matrix.compiler }}
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y autoconf automake gcc clang python3
-      - run: autoreconf -fi && ./configure CC=${{ matrix.compiler }} CFLAGS='-O2 -g -Wall -Wextra' && make
-      - run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Install build and proxy-test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake gcc clang python3 tinyproxy
+      - name: Configure
+        run: |
+          autoreconf -fi
+          ./configure CC="$CC" CFLAGS='-O2 -g -Wall -Wextra'
+      - name: Build with strict warnings
+        run: |
+          make CFLAGS='-O2 -g -Wall -Wextra -Werror -Wpedantic -Wshadow -Wundef -Wstrict-prototypes -Wformat=2 -Wcast-qual -Wwrite-strings'
+      - name: Run make check against the built binary
+        run: |
+          make check CFLAGS='-O2 -g -Wall -Wextra -Werror -Wpedantic -Wshadow -Wundef -Wstrict-prototypes -Wformat=2 -Wcast-qual -Wwrite-strings'
+      - name: Run distcheck
+        run: make distcheck
+      - name: Sanitizer build and tests
+        run: |
+          make distclean
+          ./configure CC="$CC" \
+            CFLAGS='-O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie' \
+            LDFLAGS='-fsanitize=address,undefined -no-pie'
+          make
+          make check
         env:
-          CC: ${{ matrix.compiler }}
-      - run: python3 -m unittest discover -s tests -p 'test_*.py' -v
-        env:
-          CC: ${{ matrix.compiler }}
           SANITIZE: '1'
           AUTH_SANITIZE: '1'
           RELAY_TEST_CFLAGS: '-fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie -no-pie'
-          ASAN_OPTIONS: detect_leaks=1
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: brew install autoconf automake
+      - name: Configure
+        run: |
+          autoreconf -fi
+          ./configure CC=clang CFLAGS='-O2 -g -Wall -Wextra'
+      - name: Build and run portable tests
+        run: make check
+      - name: Run distcheck
+        run: make distcheck
+
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake clang
+      - name: Configure
+        run: |
+          autoreconf -fi
+          ./configure CC=clang
+      - name: Build parser fuzzer
+        run: |
+          clang -std=c99 -g -O1 -fsanitize=fuzzer,address,undefined \
+            -fno-omit-frame-pointer -I. \
+            tests/fuzz_handshake.c -o /tmp/fuzz_handshake
+      - name: Fuzz the CONNECT response parser
+        run: |
+          /tmp/fuzz_handshake tests/fuzz_corpus -runs=20000 -max_len=16384
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1

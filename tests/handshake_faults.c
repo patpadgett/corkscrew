@@ -1,8 +1,10 @@
 /* Link-time syscall fault injection; the original relay is not exercised. */
+#define _POSIX_C_SOURCE 200809L
 #include <errno.h>
 #include <poll.h>
 #include <stddef.h>
 #include <stdlib.h>
+#include <time.h>
 #include <unistd.h>
 
 ssize_t __real_write(int, const void *, size_t);
@@ -36,7 +38,8 @@ int __wrap_poll(struct pollfd *fds, nfds_t nfds, int timeout)
 {
     static unsigned calls;
     if (getenv("HANDSHAKE_POLL_EINTR")) {
-        usleep(1000);
+        struct timespec delay = {0, 1000000};
+        nanosleep(&delay, NULL);
         errno = EINTR;
         return -1;
     }

@@ -1,0 +1,33 @@
+name: Publish release
+
+on:
+  push:
+    tags:
+      - '3.0'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake gcc python3 tinyproxy
+      - name: Build, test, and create the source archive
+        run: |
+          autoreconf -fi
+          ./configure
+          make distcheck
+          make dist
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" corkscrew-*.tar.gz \
+            --title "Corkscrew $GITHUB_REF_NAME" \
+            --notes-file CHANGELOG.md

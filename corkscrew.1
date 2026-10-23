@@ -1,0 +1,179 @@
+.\" Man page for corkscrew.
+.TH CORKSCREW 1 "October 2026" "corkscrew 3.0" "User Commands"
+.SH NAME
+corkscrew \- tunnel SSH through an HTTP proxy
+.SH SYNOPSIS
+.B corkscrew
+.RI [ options ]
+.I proxyhost proxyport desthost destport
+.RI [ authfile ]
+.SH DESCRIPTION
+.B corkscrew
+connects to an HTTP proxy and asks it to establish a tunnel to
+.I desthost:destport
+with the HTTP CONNECT method.
+The proxy response is parsed and the resulting byte stream is relayed
+between standard input/output and the proxy connection.
+It is commonly used as an OpenSSH
+.B ProxyCommand
+for reaching an SSH server through an HTTP proxy.
+.PP
+The proxy port and destination port are required decimal integers in the
+range 1 through 65535.
+IPv6 destination addresses may be supplied with or without brackets;
+the CONNECT request uses the bracketed form.
+.PP
+Standard input and standard output must be open when
+.B corkscrew
+starts.
+The proxy socket is always given a descriptor above the standard error
+descriptor so that it cannot alias a closed standard stream.
+.PP
+The original positional form remains supported.
+Options may be placed before, between, or after the positional arguments.
+.SH OPTIONS
+.TP
+.BR \-h ", " \-\-help
+Print usage information and exit.
+.TP
+.BR \-V ", " \-\-version
+Print the version and exit.
+.TP
+.BR \-v ", " \-\-verbose
+Report connection progress on standard error.
+Credentials are never printed.
+.TP
+.BI \-\-connect\-timeout= seconds
+Set the TCP connect deadline in seconds.
+The default is 10 seconds.
+.TP
+.BI \-\-handshake\-timeout= seconds
+Set the deadline for writing the CONNECT request and reading the proxy
+response in seconds.
+The default is 10 seconds.
+.TP
+.BI \-\-auth\-file= file
+Read the proxy credential from
+.I file
+instead of the final positional argument.
+The two forms cannot be combined.
+.TP
+.BI \-\-auth\-fd= fd
+Read the proxy credential from an inherited descriptor.
+The descriptor must be 3 or greater and is closed after one line is read.
+This mode does not require a regular file and does not check file
+permissions because descriptors may refer to pipes or other protected
+streams supplied by a supervisor.
+.TP
+.B \-\-http11
+Send an HTTP/1.1 CONNECT request with
+.B Host
+and
+.B User-Agent
+headers.
+The default remains HTTP/1.0 for compatibility with older proxies.
+.SH AUTHENTICATION
+If
+.I authfile
+is given, the first line of the file is read as an HTTP Basic
+authentication credential in the form
+.RI username : password .
+The line ending may be LF or CRLF.
+Leading and trailing spaces are preserved, including trailing spaces before
+the line ending.
+.PP
+The authentication file must be a regular file and must not be accessible
+by group or other users.
+Create it with a command such as:
+.PP
+.RS
+.nf
+umask 077
+printf '%s\n' 'username:password' >~/.ssh/corkscrew-auth
+chmod 600 ~/.ssh/corkscrew-auth
+.fi
+.RE
+.PP
+Credentials are encoded with Base64 for the
+.B Proxy-Authorization
+header.
+Base64 is not encryption.
+The proxy connection is plaintext HTTP unless an external transport
+protects it.
+.SH SIGNALS
+During the relay,
+.BR SIGTERM ,
+.BR SIGINT ,
+.BR SIGHUP ,
+and
+.B SIGQUIT
+request an orderly shutdown.
+Shared descriptor flags are restored before the process exits.
+.B SIGTSTP
+restores the inherited descriptor flags before stopping and reapplies
+nonblocking mode after the process resumes.
+.SH EXIT STATUS
+.TP
+.B 0
+The tunnel reached end-of-file on both directions and closed normally.
+.TP
+.B 1
+An argument, connection, authentication, handshake, or relay error
+occurred.
+.TP
+.B 2
+The command line was invalid and the usage message was printed.
+.TP
+.B 128+\fIsignal\fR
+A termination signal was received during the relay.
+.SH EXAMPLES
+Use
+.B corkscrew
+directly:
+.PP
+.RS
+.nf
+corkscrew proxy.example.com 8080 ssh.example.com 22
+.fi
+.RE
+.PP
+Configure OpenSSH to use it:
+.PP
+.RS
+.nf
+Host ssh.example.com
+    ProxyCommand /usr/local/bin/corkscrew proxy.example.com 8080 %h %p
+.fi
+.RE
+.PP
+With proxy authentication:
+.PP
+.RS
+.nf
+Host ssh.example.com
+    ProxyCommand /usr/local/bin/corkscrew proxy.example.com 8080 %h %p ~/.ssh/corkscrew-auth
+.fi
+.RE
+.PP
+Use an integrated proxy header mode and explicit deadlines:
+.PP
+.RS
+.nf
+corkscrew --http11 --connect-timeout=5 --handshake-timeout=5 \\
+    proxy.example.com 8080 ssh.example.com 22
+.fi
+.RE
+.SH SECURITY
+HTTP CONNECT carries the request and tunnel over a plaintext TCP
+connection to the proxy.
+Proxy Basic authentication is only Base64 encoded.
+Use a trusted proxy or a protected network path, and do not reuse valuable
+passwords.
+.PP
+The tunnel is not a substitute for SSH host-key verification.
+.SH SEE ALSO
+.BR ssh (1),
+.BR ssh_config (5)
+.SH AUTHORS
+Corkscrew was originally written by Pat Padgett and contributors.
+This manual page describes the current implementation.

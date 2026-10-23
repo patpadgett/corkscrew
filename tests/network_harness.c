@@ -11,6 +11,7 @@ static int stalled_connect(int fd, const struct sockaddr *address, socklen_t len
 #undef connect
 #include <assert.h>
 #include <signal.h>
+#include <sys/time.h>
 
 static int stall;
 static int stalled_connect(int fd, const struct sockaddr *address, socklen_t length)
@@ -49,15 +50,15 @@ int main(void)
     assert(first >= 0);
     close(first);
     for (i = 0; i < 100; ++i) {
-        assert(sock_connect("127.0.0.1", ntohs(address.sin_port)) == -1);
+        assert(sock_connect("127.0.0.1", ntohs(address.sin_port), CONNECT_TIMEOUT_MS) == -1);
         assert(errno == ECONNREFUSED);
     }
     after = open("/dev/null", O_RDONLY);
     assert(after == first);
     close(after);
-    assert(sock_connect("127.0.0.1", 0) == -1 && errno == EINVAL);
-    assert(sock_connect("127.0.0.1", 65536) == -1 && errno == EINVAL);
-    assert(sock_connect("127.0.0.1", 1) == -1);
+    assert(sock_connect("127.0.0.1", 0, CONNECT_TIMEOUT_MS) == -1 && errno == EINVAL);
+    assert(sock_connect("127.0.0.1", 65536, CONNECT_TIMEOUT_MS) == -1 && errno == EINVAL);
+    assert(sock_connect("127.0.0.1", 1, CONNECT_TIMEOUT_MS) == -1);
     {
         struct sigaction action;
         struct itimerval timer = {{0, 5000}, {0, 5000}};
@@ -70,7 +71,7 @@ int main(void)
         assert(setitimer(ITIMER_REAL, &timer, NULL) == 0);
         stall = 1;
         assert(clock_gettime(CLOCK_MONOTONIC, &start) == 0);
-        assert(sock_connect("127.0.0.1", 9) == -1);
+        assert(sock_connect("127.0.0.1", 9, CONNECT_TIMEOUT_MS) == -1);
         assert(errno == ETIMEDOUT);
         assert(clock_gettime(CLOCK_MONOTONIC, &end) == 0);
         elapsed = end.tv_sec - start.tv_sec + (end.tv_nsec - start.tv_nsec) / 1e9;

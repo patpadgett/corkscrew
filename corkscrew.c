@@ -11,24 +11,19 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
-#include <poll.h>
 #include <signal.h>
-#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
-#include <sys/time.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 
-#if HAVE_SYS_FILIO_H
-#include <sys/filio.h>
-#endif
-
 char *base64_encode(const char *in);
-void usage(void);
-int sock_connect(const char *hname, int port);
+static void usage(FILE *stream);
+static void print_version(void);
+int sock_connect(const char *hname, int port, int timeout_ms);
 int main(int argc, char *argv[]);
 
 #define BUFSIZE 4096
@@ -85,12 +80,19 @@ char *base64_encode(const char *in)
 	return buf;
 }
 
-/* Volatile stores prevent dead-store elimination of credential clearing. */
+/* Clearing must not be optimized away; explicit_bzero also handles the
+ * compiler knowing that the memory is about to be released. */
 static void clear_secret(void *memory, size_t size)
 {
+#ifdef HAVE_EXPLICIT_BZERO
+	explicit_bzero(memory, size);
+#else
 	volatile unsigned char *p = memory;
-	while (size-- != 0)
+	while (size != 0) {
 		*p++ = 0;
+		--size;
+	}
+#endif
 }
 
 #define AUTH_MAX_LENGTH (BUFSIZE - 1)
@@ -125,14 +127,55 @@ invalid:
 	return NULL;
 }
 
-#ifdef ANSI_FUNC
-void usage (void)
-#else
-void usage ()
-#endif
+/* The caller transfers ownership of fd. Credentials supplied this way may
+ * come from a pipe or secret-manager descriptor, so file-permission checks
+ * do not apply. */
+static char *read_credentials_from_fd(int fd)
 {
-	printf("corkscrew %s (agroman@agroman.net)\n\n", VERSION);
-	printf("usage: corkscrew <proxyhost> <proxyport> <desthost> <destport> [authfile]\n");
+	FILE *fp = fdopen(fd, "r");
+	char *up;
+	int close_error;
+
+	if (fp == NULL) {
+		close(fd);
+		return NULL;
+	}
+	if (setvbuf(fp, NULL, _IONBF, 0) != 0) {
+		fclose(fp);
+		return NULL;
+	}
+	up = read_credentials(fp);
+	close_error = fclose(fp);
+	if (close_error != 0) {
+		if (up != NULL) {
+			clear_secret(up, AUTH_MAX_LENGTH + 2);
+			free(up);
+		}
+		return NULL;
+	}
+	return up;
+}
+
+static void print_version(void)
+{
+	printf("corkscrew %s\n", VERSION);
+}
+
+static void usage(FILE *stream)
+{
+	fprintf(stream, "corkscrew %s (agroman@agroman.net)\n\n", VERSION);
+	fprintf(stream, "usage: corkscrew [options] <proxyhost> <proxyport> "
+	    "<desthost> <destport> [authfile]\n\n");
+	fprintf(stream, "options:\n");
+	fprintf(stream, "  -h, --help                     show this help\n");
+	fprintf(stream, "  -V, --version                  show the version\n");
+	fprintf(stream, "  -v, --verbose                  report connection progress\n");
+	fprintf(stream, "      --connect-timeout=SECONDS  TCP connect deadline (default 10)\n");
+	fprintf(stream, "      --handshake-timeout=SECONDS\n");
+	fprintf(stream, "                                 CONNECT write/read deadline (default 10)\n");
+	fprintf(stream, "      --auth-file=FILE           use FILE for proxy credentials\n");
+	fprintf(stream, "      --auth-fd=FD               read credentials from inherited FD\n");
+	fprintf(stream, "      --http11                   send an HTTP/1.1 CONNECT request\n");
 }
 
 /* Reject strtol's optional signs/whitespace as well as partial parses. */
@@ -211,13 +254,13 @@ static int connect_remaining_ms(const struct timespec *deadline)
 	return (int)(seconds * 1000 + (nanos + 999999L) / 1000000L);
 }
 
-int sock_connect(const char *hname, int port)
+int sock_connect(const char *hname, int port, int timeout_ms)
 {
 	struct addrinfo hints, *addresses, *ai;
 	struct timespec deadline;
 	char service[6];
 	int result, saved_errno = EHOSTUNREACH;
-	if (port < 1 || port > 65535) {
+	if (port < 1 || port > 65535 || timeout_ms < 1) {
 		errno = EINVAL;
 		return -1;
 	}
@@ -239,8 +282,8 @@ int sock_connect(const char *hname, int port)
 		saved_errno = errno;
 		goto done;
 	}
-	deadline.tv_sec += CONNECT_TIMEOUT_MS / 1000;
-	deadline.tv_nsec += (CONNECT_TIMEOUT_MS % 1000) * 1000000L;
+	deadline.tv_sec += timeout_ms / 1000;
+	deadline.tv_nsec += (timeout_ms % 1000) * 1000000L;
 	if (deadline.tv_nsec >= 1000000000L) {
 		++deadline.tv_sec;
 		deadline.tv_nsec -= 1000000000L;
@@ -422,24 +465,30 @@ static int handshake_status(const unsigned char *header, size_t length)
 	return -1;
 }
 
-/* Setup owns only the proxy socket, never stdin. The single absolute deadline
- * covers request writes, header reads and forwarding coalesced tunnel bytes.
+/* Setup owns only the proxy socket, never stdin or stdout. The deadline
+ * covers request writes and header reads, not coalesced tunnel bytes.
  * Restore descriptor flags and SIGPIPE disposition before entering the relay.
  * DNS/TCP connect and relay lifetime are deliberately outside this deadline. */
-static int perform_handshake(int csock, const char *uri)
+static int perform_handshake(int csock, char *uri, size_t uri_size,
+		unsigned char *trailing, size_t *trailing_length, int timeout_ms)
 {
 	unsigned char header[HANDSHAKE_HEADER_LIMIT];
 	size_t used = 0, scan = 0, end = 0;
 	ssize_t count;
 	struct timespec deadline;
 	struct sigaction ignore, previous;
-	int socket_flags = -1, stdout_flags = -1, signal_changed = 0;
+	int socket_flags = -1, signal_changed = 0;
 	int result = -1, saved_errno, code;
 
+	*trailing_length = 0;
+	if (timeout_ms < 1) {
+		errno = EINVAL;
+		goto done;
+	}
 	if (clock_gettime(CLOCK_MONOTONIC, &deadline) < 0)
 		goto done;
-	deadline.tv_sec += HANDSHAKE_TIMEOUT_MS / 1000;
-	deadline.tv_nsec += (HANDSHAKE_TIMEOUT_MS % 1000) * 1000000L;
+	deadline.tv_sec += timeout_ms / 1000;
+	deadline.tv_nsec += (timeout_ms % 1000) * 1000000L;
 	if (deadline.tv_nsec >= 1000000000L) {
 		deadline.tv_sec++;
 		deadline.tv_nsec -= 1000000000L;
@@ -455,6 +504,8 @@ static int perform_handshake(int csock, const char *uri)
 		goto done;
 	if (handshake_write(csock, uri, strlen(uri), &deadline) < 0)
 		goto done;
+	/* Do not retain encoded credentials while waiting for the proxy. */
+	clear_secret(uri, uri_size);
 	for (;;) {
 		if (used == sizeof(header)) {
 			errno = EMSGSIZE;
@@ -492,20 +543,13 @@ static int perform_handshake(int csock, const char *uri)
 		errno = EPROTO;
 		goto done;
 	}
-	if (used > end) {
-		stdout_flags = fcntl(STDOUT_FILENO, F_GETFL);
-		if (stdout_flags < 0 ||
-			fcntl(STDOUT_FILENO, F_SETFL, stdout_flags | O_NONBLOCK) < 0 ||
-			handshake_write(STDOUT_FILENO, header + end, used - end, &deadline) < 0)
-			goto done;
-	}
+	/* Caller provides HANDSHAKE_HEADER_LIMIT bytes; relay owns delivery. */
+	*trailing_length = used - end;
+	memcpy(trailing, header + end, *trailing_length);
 	result = 0;
  done:
 	saved_errno = errno;
-	if (stdout_flags >= 0 && fcntl(STDOUT_FILENO, F_SETFL, stdout_flags) < 0 && result == 0) {
-		saved_errno = errno;
-		result = -1;
-	}
+	clear_secret(uri, uri_size);
 	if (socket_flags >= 0 && fcntl(csock, F_SETFL, socket_flags) < 0 && result == 0) {
 		saved_errno = errno;
 		result = -1;
@@ -519,32 +563,52 @@ static int perform_handshake(int csock, const char *uri)
 }
 
 /* Buffered duplex relay. Keep each direction independent and bounded. */
-/* Termination is deferred until inherited descriptor flags are restored. */
+/* Termination and job-control signals are deferred until inherited descriptor
+ * flags are restored. */
+#define TERMINATION_SIGNAL_COUNT 4
+static const int termination_signals[TERMINATION_SIGNAL_COUNT] = {
+	SIGTERM, SIGINT, SIGHUP, SIGQUIT
+};
 static volatile sig_atomic_t termination_requested;
+static volatile sig_atomic_t suspend_requested;
+
 static void request_termination(int signo) { termination_requested = signo; }
-static int install_termination_handlers(struct sigaction previous[3])
+static void request_suspend(int signo) { (void)signo; suspend_requested = 1; }
+
+static int install_termination_handlers(
+		struct sigaction previous[TERMINATION_SIGNAL_COUNT])
 {
-    const int signals[3] = {SIGTERM, SIGINT, SIGHUP};
-    struct sigaction action;
-    int i;
-    memset(&action, 0, sizeof(action));
-    action.sa_handler = request_termination;
-    sigemptyset(&action.sa_mask);
-    for (i = 0; i < 3; i++) {
-        if (sigaction(signals[i], &action, &previous[i]) < 0) {
-            while (i-- > 0) sigaction(signals[i], &previous[i], NULL);
-            return -1;
-        }
-    }
-    return 0;
-}
-static void restore_termination_handlers(struct sigaction previous[3])
-{
-    const int signals[3] = {SIGTERM, SIGINT, SIGHUP};
-    int i;
-    for (i = 0; i < 3; i++) sigaction(signals[i], &previous[i], NULL);
+	struct sigaction action;
+	int i;
+	memset(&action, 0, sizeof(action));
+	action.sa_handler = request_termination;
+	sigemptyset(&action.sa_mask);
+	for (i = 0; i < TERMINATION_SIGNAL_COUNT; i++) {
+		if (sigaction(termination_signals[i], &action, &previous[i]) < 0) {
+			while (i-- > 0)
+				sigaction(termination_signals[i], &previous[i], NULL);
+			return -1;
+		}
+	}
+	return 0;
 }
 
+static void restore_termination_handlers(
+		struct sigaction previous[TERMINATION_SIGNAL_COUNT])
+{
+	int i;
+	for (i = 0; i < TERMINATION_SIGNAL_COUNT; i++)
+		sigaction(termination_signals[i], &previous[i], NULL);
+}
+
+static int install_suspend_handler(struct sigaction *previous)
+{
+	struct sigaction action;
+	memset(&action, 0, sizeof(action));
+	action.sa_handler = request_suspend;
+	sigemptyset(&action.sa_mask);
+	return sigaction(SIGTSTP, &action, previous);
+}
 
 struct relay_buffer {
 	unsigned char data[65536];
@@ -558,6 +622,27 @@ static int relay_fcntl(int fd, int command, int flags)
 		result = fcntl(fd, command, flags);
 	} while (result < 0 && errno == EINTR);
 	return result;
+}
+
+/* Restore or reapply the inherited flags on every descriptor we changed. */
+static int relay_set_flags(const int fds[3], const int original_flags[3],
+		const int changed[3], int nonblocking)
+{
+	int i, error = 0;
+	for (i = 2; i >= 0; i--) {
+		int flags;
+		if (!changed[i])
+			continue;
+		flags = nonblocking ? (original_flags[i] | O_NONBLOCK)
+		    : original_flags[i];
+		if (relay_fcntl(fds[i], F_SETFL, flags) < 0 && !error)
+			error = errno;
+	}
+	if (error) {
+		errno = error;
+		return -1;
+	}
+	return 0;
 }
 
 /* Return -1 for failure, 0 for EOF, 1 for progress or retry. */
@@ -593,23 +678,39 @@ static int relay_write(int fd, struct relay_buffer *buffer)
 	return -1;
 }
 
-static int relay(int csock)
+static int relay(int csock, const unsigned char *trailing, size_t trailing_length)
 {
 	struct relay_buffer upstream = {{0}, 0, 0};
 	struct relay_buffer downstream = {{0}, 0, 0};
 	struct pollfd ready[3];
-	struct sigaction ignore, original_signal, termination_previous[3];
-	int termination_installed = 0;
-	int fds[3], original_flags[3], changed[3] = {0, 0, 0};
+	struct sigaction ignore, original_signal;
+	struct sigaction termination_previous[TERMINATION_SIGNAL_COUNT];
+	struct sigaction suspend_previous;
+	int termination_installed = 0, suspend_installed = 0;
+	int fds[3], original_flags[3] = {0, 0, 0}, changed[3] = {0, 0, 0};
 	int input_eof = 0, socket_eof = 0, write_shutdown = 0;
 	int signal_changed = 0, error = 0, i, result;
 
+	if (trailing_length > sizeof(downstream.data)) {
+		fprintf(stderr, "corkscrew: relay: initial payload too large\n");
+		return 1;
+	}
+	if (trailing_length)
+		memcpy(downstream.data, trailing, trailing_length);
+	downstream.length = trailing_length;
 	termination_requested = 0;
-	if (install_termination_handlers(termination_previous) < 0) return 1;
-	termination_installed = 1;
+	suspend_requested = 0;
 	fds[0] = STDIN_FILENO;
 	fds[1] = STDOUT_FILENO;
 	fds[2] = csock;
+	if (install_termination_handlers(termination_previous) < 0)
+		return 1;
+	termination_installed = 1;
+	if (install_suspend_handler(&suspend_previous) < 0) {
+		error = errno;
+		goto cleanup;
+	}
+	suspend_installed = 1;
 	memset(&ignore, 0, sizeof(ignore));
 	ignore.sa_handler = SIG_IGN;
 	sigemptyset(&ignore.sa_mask);
@@ -639,6 +740,45 @@ static int relay(int csock)
 
 	for (;;) {
 		if (termination_requested) { error = EINTR; goto cleanup; }
+		if (suspend_requested) {
+			struct sigaction default_action, saved_action;
+			int suspend_error;
+			suspend_requested = 0;
+			/* A stopped process must not leave a shared terminal in
+			 * nonblocking mode. Restore first, stop, then reapply. */
+			if (relay_set_flags(fds, original_flags, changed, 0) < 0) {
+				error = errno;
+				goto cleanup;
+			}
+			memset(&default_action, 0, sizeof(default_action));
+			default_action.sa_handler = SIG_DFL;
+			sigemptyset(&default_action.sa_mask);
+			if (sigaction(SIGTSTP, &default_action, &saved_action) < 0) {
+				error = errno;
+				goto cleanup;
+			}
+			if (raise(SIGTSTP) != 0) {
+				error = EINVAL;
+				suspend_error = 1;
+			} else {
+				suspend_error = 0;
+			}
+			if (sigaction(SIGTSTP, &saved_action, NULL) < 0 &&
+			    !suspend_error) {
+				error = errno;
+				suspend_error = 1;
+			}
+			if (suspend_error)
+				goto cleanup;
+			if (termination_requested) {
+				error = EINTR;
+				goto cleanup;
+			}
+			if (relay_set_flags(fds, original_flags, changed, 1) < 0) {
+				error = errno;
+				goto cleanup;
+			}
+		}
 		if (input_eof && upstream.length == 0 && !write_shutdown) {
 			do {
 				result = shutdown(csock, SHUT_WR);
@@ -649,12 +789,11 @@ static int relay(int csock)
 			}
 			write_shutdown = 1;
 		}
-		/* Remote EOF ends the session, but never discard queued output
-		 * or input already accepted from the caller. */
-		if (socket_eof && downstream.length == 0 && upstream.length == 0)
+		/* A remote half-close ends only downstream; upstream lives to EOF. */
+		if (socket_eof && write_shutdown && downstream.length == 0)
 			break;
 
-		ready[0].fd = (!input_eof && !socket_eof && upstream.length == 0)
+		ready[0].fd = (!input_eof && upstream.length == 0)
 		    ? STDIN_FILENO : -1;
 		ready[0].events = POLLIN;
 		ready[1].fd = downstream.length ? STDOUT_FILENO : -1;
@@ -713,7 +852,7 @@ static int relay(int csock)
 			if (result == 0)
 				socket_eof = 1;
 		}
-		if (!socket_eof && !input_eof && upstream.length == 0 &&
+		if (!input_eof && upstream.length == 0 &&
 		    (ready[0].revents & (POLLIN | POLLHUP | POLLERR))) {
 			result = relay_read(STDIN_FILENO, &upstream);
 			if (result < 0) {
@@ -727,11 +866,12 @@ static int relay(int csock)
 
 cleanup:
 	/* O_NONBLOCK belongs to the open file description, not this process. */
-	for (i = 2; i >= 0; i--) {
-		if (changed[i] && relay_fcntl(fds[i], F_SETFL, original_flags[i]) < 0 && !error)
-			error = errno;
-	}
+	if (relay_set_flags(fds, original_flags, changed, 0) < 0 && !error)
+		error = errno;
 	if (signal_changed && sigaction(SIGPIPE, &original_signal, NULL) < 0 && !error)
+		error = errno;
+	if (suspend_installed &&
+	    sigaction(SIGTSTP, &suspend_previous, NULL) < 0 && !error)
 		error = errno;
 	if (termination_installed) restore_termination_handlers(termination_previous);
 	if (termination_requested) return 128 + termination_requested;
@@ -743,108 +883,388 @@ cleanup:
 }
 /* End buffered duplex relay. */
 
-#ifdef ANSI_FUNC
-int main (int argc, char *argv[])
-#else
-int main (argc, argv)
-int argc;
-char *argv[];
-#endif
-{
-#ifdef ANSI_FUNC
-	char uri[BUFSIZE] = "";
-#else
-	char uri[BUFSIZE];
-#endif
-	char *host = NULL, *desthost = NULL, *destport = NULL;
-	char *up = NULL;
-	int port, destination_port, request_length, csock;
-	FILE *fp;
+struct options {
+	int connect_timeout_ms;
+	int handshake_timeout_ms;
+	int verbose;
+	int http11;
+	const char *auth_file;
+	int auth_fd;
+};
 
-	if ((argc == 5) || (argc == 6)) {
-		host = argv[1];
-		desthost = argv[3];
-		destport = argv[4];
-		if (parse_port(argv[2], &port) < 0 ||
-		    parse_port(destport, &destination_port) < 0) {
-			fprintf(stderr, "Invalid port: expected decimal integer in 1..65535\n");
-			return EXIT_FAILURE;
-		}
-		if (validate_host(&host) < 0 || validate_host(&desthost) < 0) {
-			fprintf(stderr, "Invalid hostname or IP address\n");
-			return EXIT_FAILURE;
-		}
-		request_length = snprintf(uri, sizeof(uri),
-		    strchr(desthost, ':') ? "CONNECT [%s]:%d HTTP/1.0" : "CONNECT %s:%d HTTP/1.0",
-		    desthost, destination_port);
-		/* Reserve the final CRLF CRLF and NUL before auth is read/appended.
-		 * The authentication builder must separately check its own addition. */
-		if (request_length < 0 || (size_t)request_length >= sizeof(uri) - strlen(linefeed)) {
-			fprintf(stderr, "CONNECT request too long\n");
-			return EXIT_FAILURE;
-		}
-		if ((argc == 6)) {
-			fp = fopen(argv[5], "r");
-			if (fp == NULL) {
-				fprintf(stderr, "Error opening %s: %s\n", argv[5], strerror(errno));
-				exit(-1);
-			} else {
-				int close_error;
-				up = read_credentials(fp);
-				close_error = fclose(fp);
-				if (up == NULL || close_error != 0) {
-					if (up != NULL) {
-						clear_secret(up, AUTH_MAX_LENGTH + 2);
-						free(up);
-					}
-					fprintf(stderr, "Invalid, oversized, or unreadable authentication file\n");
-					exit(EXIT_FAILURE);
-				}
+static int parse_positive_seconds(const char *text, int *milliseconds)
+{
+	const unsigned char *p = (const unsigned char *)text;
+	char *end;
+	long value;
+
+	if (!*p)
+		return -1;
+	for (; *p; ++p)
+		if (*p < '0' || *p > '9')
+			return -1;
+	errno = 0;
+	value = strtol(text, &end, 10);
+	if (errno == ERANGE || *end || value < 1 || value > INT_MAX / 1000)
+		return -1;
+	*milliseconds = (int)(value * 1000);
+	return 0;
+}
+
+static int parse_descriptor(const char *text, int *fd)
+{
+	const unsigned char *p = (const unsigned char *)text;
+	char *end;
+	long value;
+
+	if (!*p)
+		return -1;
+	for (; *p; ++p)
+		if (*p < '0' || *p > '9')
+			return -1;
+	errno = 0;
+	value = strtol(text, &end, 10);
+	if (errno == ERANGE || *end || value < 3 || value > INT_MAX)
+		return -1;
+	*fd = (int)value;
+	return 0;
+}
+
+static int option_error(const char *message, const char *detail)
+{
+	if (detail != NULL)
+		fprintf(stderr, "corkscrew: %s: %s\n", message, detail);
+	else
+		fprintf(stderr, "corkscrew: %s\n", message);
+	usage(stderr);
+	return -1;
+}
+
+/* Return 1 for parsed options, 0 after printing help/version, -1 on error. */
+static int option_value(int argc, char **argv, int *index,
+		const char *argument, const char *name, const char **value)
+{
+	size_t length = strlen(name);
+
+	if (strncmp(argument, name, length) != 0)
+		return 0;
+	if (argument[length] == '=') {
+		*value = argument + length + 1;
+		return 1;
+	}
+	if (argument[length] == '\0') {
+		if (*index + 1 >= argc)
+			return -1;
+		*value = argv[++*index];
+		return 1;
+	}
+	return 0;
+}
+
+static int parse_options(int argc, char **argv, struct options *options,
+		char **positional, int *positional_count)
+{
+	const char *value;
+	int i, count = 0, matched;
+
+	options->connect_timeout_ms = CONNECT_TIMEOUT_MS;
+	options->handshake_timeout_ms = HANDSHAKE_TIMEOUT_MS;
+	options->verbose = 0;
+	options->http11 = 0;
+	options->auth_file = NULL;
+	options->auth_fd = -1;
+
+	for (i = 1; i < argc; ++i) {
+		const char *argument = argv[i];
+		if (strcmp(argument, "--") == 0) {
+			for (++i; i < argc; ++i) {
+				if (count >= 5)
+					return option_error("too many arguments", NULL);
+				positional[count++] = argv[i];
 			}
+			break;
 		}
-	} else {
-		usage();
-		exit(-1);
+		if (strcmp(argument, "-h") == 0 || strcmp(argument, "--help") == 0) {
+			usage(stdout);
+			return 0;
+		}
+		if (strcmp(argument, "-V") == 0 || strcmp(argument, "--version") == 0) {
+			print_version();
+			return 0;
+		}
+		if (strcmp(argument, "-v") == 0 || strcmp(argument, "--verbose") == 0) {
+			options->verbose = 1;
+			continue;
+		}
+		if (strcmp(argument, "--http11") == 0) {
+			options->http11 = 1;
+			continue;
+		}
+		matched = option_value(argc, argv, &i, argument,
+		    "--connect-timeout", &value);
+		if (matched < 0)
+			return option_error("missing value for --connect-timeout", NULL);
+		if (matched) {
+			if (parse_positive_seconds(value, &options->connect_timeout_ms) < 0)
+				return option_error("invalid --connect-timeout", value);
+			continue;
+		}
+		matched = option_value(argc, argv, &i, argument,
+		    "--handshake-timeout", &value);
+		if (matched < 0)
+			return option_error("missing value for --handshake-timeout", NULL);
+		if (matched) {
+			if (parse_positive_seconds(value, &options->handshake_timeout_ms) < 0)
+				return option_error("invalid --handshake-timeout", value);
+			continue;
+		}
+		matched = option_value(argc, argv, &i, argument, "--auth-file", &value);
+		if (matched < 0)
+			return option_error("missing value for --auth-file", NULL);
+		if (matched) {
+			if (*value == '\0')
+				return option_error("empty --auth-file", NULL);
+			options->auth_file = value;
+			continue;
+		}
+		matched = option_value(argc, argv, &i, argument, "--auth-fd", &value);
+		if (matched < 0)
+			return option_error("missing value for --auth-fd", NULL);
+		if (matched) {
+			if (parse_descriptor(value, &options->auth_fd) < 0)
+				return option_error("invalid --auth-fd", value);
+			continue;
+		}
+		/* Keep a negative positional value, such as a bad port supplied by
+		 * a caller or test, available for the normal argument validation. */
+		if (argument[0] == '-' && argument[1] != '\0' &&
+		    !(argument[1] >= '0' && argument[1] <= '9'))
+			return option_error("unknown option", argument);
+		if (count >= 5)
+			return option_error("too many arguments", NULL);
+		positional[count++] = argv[i];
+	}
+
+	if (count != 4 && count != 5)
+		return option_error("expected 4 or 5 positional arguments", NULL);
+	if (options->auth_file != NULL && count == 5)
+		return option_error("authentication file specified twice", NULL);
+	if (options->auth_fd >= 0 &&
+	    (options->auth_file != NULL || count == 5))
+		return option_error("--auth-fd cannot be combined with an authentication file", NULL);
+	*positional_count = count;
+	return 1;
+}
+
+int main(int argc, char *argv[])
+{
+	char uri[BUFSIZE] = "";
+	char authority[BUFSIZE];
+	char *positional[5];
+	char *host = NULL, *desthost = NULL, *destport = NULL;
+	const char *auth_path;
+	char *up = NULL;
+	unsigned char trailing[HANDSHAKE_HEADER_LIMIT];
+	size_t trailing_length = 0, used;
+	int port = 0, destination_port = 0, request_length, csock = -1;
+	int positional_count = 0, parsed, authority_length;
+	int result = EXIT_FAILURE;
+	struct options options;
+	FILE *fp = NULL;
+
+	parsed = parse_options(argc, argv, &options, positional, &positional_count);
+	if (parsed == 0) {
+		result = EXIT_SUCCESS;
+		goto cleanup;
+	}
+	if (parsed < 0) {
+		result = 2;
+		goto cleanup;
+	}
+	auth_path = options.auth_file != NULL ? options.auth_file :
+	    (positional_count == 5 ? positional[4] : NULL);
+
+	if (fcntl(STDIN_FILENO, F_GETFL, 0) < 0 ||
+	    fcntl(STDOUT_FILENO, F_GETFL, 0) < 0) {
+		fprintf(stderr, "corkscrew: standard input and standard output must be open\n");
+		goto cleanup;
+	}
+	host = positional[0];
+	desthost = positional[2];
+	destport = positional[3];
+	if (parse_port(positional[1], &port) < 0 ||
+	    parse_port(destport, &destination_port) < 0) {
+		fprintf(stderr, "Invalid port: expected decimal integer in 1..65535\n");
+		goto cleanup;
+	}
+	if (validate_host(&host) < 0 || validate_host(&desthost) < 0) {
+		fprintf(stderr, "Invalid hostname or IP address\n");
+		goto cleanup;
+	}
+	authority_length = snprintf(authority, sizeof(authority),
+	    strchr(desthost, ':') ? "[%s]:%d" : "%s:%d",
+	    desthost, destination_port);
+	if (authority_length < 0 ||
+	    (size_t)authority_length >= sizeof(authority)) {
+		fprintf(stderr, "CONNECT authority too long\n");
+		goto cleanup;
+	}
+	request_length = snprintf(uri, sizeof(uri), "CONNECT %s HTTP/%s",
+	    authority, options.http11 ? "1.1" : "1.0");
+	/* Reserve the final CRLF CRLF and NUL before auth is read/appended.
+	 * The authentication builder must separately check its own addition. */
+	if (request_length < 0 ||
+	    (size_t)request_length >= sizeof(uri) - strlen(linefeed)) {
+		fprintf(stderr, "CONNECT request too long\n");
+		goto cleanup;
+	}
+	if (options.http11) {
+		used = strlen(uri);
+		request_length = snprintf(uri + used, sizeof(uri) - used,
+		    "\r\nHost: %s\r\nUser-Agent: corkscrew/%s",
+		    authority, VERSION);
+		if (request_length < 0 ||
+		    (size_t)request_length >= sizeof(uri) - used) {
+			fprintf(stderr, "CONNECT request too long\n");
+			goto cleanup;
+		}
+	}
+	if (auth_path != NULL) {
+		struct stat st;
+		int auth_fd, close_error;
+		/* O_NONBLOCK prevents an accidental FIFO from blocking before
+		 * the regular-file check rejects it. */
+		auth_fd = open(auth_path, O_RDONLY | O_NONBLOCK);
+		if (auth_fd < 0) {
+			fprintf(stderr, "Error opening %s: %s\n",
+			    auth_path, strerror(errno));
+			goto cleanup;
+		}
+		if (fstat(auth_fd, &st) < 0) {
+			int saved_errno = errno;
+			close(auth_fd);
+			errno = saved_errno;
+			fprintf(stderr, "Unable to inspect authentication file: %s\n",
+			    strerror(errno));
+			goto cleanup;
+		}
+		if (!S_ISREG(st.st_mode)) {
+			close(auth_fd);
+			fprintf(stderr, "Authentication file must be a regular file\n");
+			goto cleanup;
+		}
+		if ((st.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
+			close(auth_fd);
+			fprintf(stderr, "Authentication file must not be accessible by group or others; use chmod 600\n");
+			goto cleanup;
+		}
+		fp = fdopen(auth_fd, "r");
+		if (fp == NULL) {
+			int saved_errno = errno;
+			close(auth_fd);
+			errno = saved_errno;
+			fprintf(stderr, "Unable to open authentication file: %s\n",
+			    strerror(errno));
+			goto cleanup;
+		}
+		/* Avoid an uncleared stdio buffer containing credentials. */
+		if (setvbuf(fp, NULL, _IONBF, 0) != 0) {
+			fprintf(stderr, "Unable to disable authentication file buffering\n");
+			goto cleanup;
+		}
+		up = read_credentials(fp);
+		close_error = fclose(fp);
+		fp = NULL;
+		if (up == NULL || close_error != 0) {
+			if (up != NULL) {
+				clear_secret(up, AUTH_MAX_LENGTH + 2);
+				free(up);
+				up = NULL;
+			}
+			fprintf(stderr, "Invalid, oversized, or unreadable authentication file\n");
+			goto cleanup;
+		}
+	} else if (options.auth_fd >= 0) {
+		up = read_credentials_from_fd(options.auth_fd);
+		if (up == NULL) {
+			fprintf(stderr, "Invalid, oversized, or unreadable credentials from file descriptor\n");
+			goto cleanup;
+		}
 	}
 
 	if (up != NULL) {
 		char *encoded = base64_encode(up);
-		int request_length;
 		clear_secret(up, AUTH_MAX_LENGTH + 2);
 		free(up);
 		up = NULL;
 		if (encoded == NULL) {
 			fprintf(stderr, "Unable to encode proxy credentials\n");
-			exit(EXIT_FAILURE);
+			goto cleanup;
 		}
-		size_t used = strlen(uri);
+		used = strlen(uri);
 		request_length = snprintf(uri + used, sizeof(uri) - used,
 			"\r\nProxy-Authorization: Basic %s\r\n\r\n", encoded);
 		clear_secret(encoded, strlen(encoded));
 		free(encoded);
-		if (request_length < 0 || (size_t)request_length >= sizeof(uri) - used) {
-			clear_secret(uri, sizeof(uri));
+		if (request_length < 0 ||
+		    (size_t)request_length >= sizeof(uri) - used) {
 			fprintf(stderr, "Authenticated CONNECT request is too long\n");
-			exit(EXIT_FAILURE);
+			goto cleanup;
 		}
 	} else {
+		if (strlen(uri) + strlen(linefeed) >= sizeof(uri)) {
+			fprintf(stderr, "CONNECT request too long\n");
+			goto cleanup;
+		}
 		strncat(uri, linefeed, sizeof(uri) - strlen(uri) - 1);
 	}
 
-	csock = sock_connect(host, port);
-	if(csock == -1) {
-		fprintf(stderr, "Couldn't establish connection to proxy: %s\n", strerror(errno));
-		exit(-1);
+	if (options.verbose)
+		fprintf(stderr, "corkscrew: connecting to proxy %s:%d for %s:%d\n",
+		    host, port, desthost, destination_port);
+	csock = sock_connect(host, port, options.connect_timeout_ms);
+	if (csock < 0) {
+		fprintf(stderr, "Couldn't establish connection to proxy: %s\n",
+		    strerror(errno));
+		goto cleanup;
+	}
+	/* Never let the proxy socket alias closed stdin, stdout or stderr. */
+	if (csock <= STDERR_FILENO) {
+		int high = fcntl(csock, F_DUPFD, STDERR_FILENO + 1);
+		if (high < 0) {
+			fprintf(stderr, "Couldn't move proxy socket descriptor: %s\n",
+			    strerror(errno));
+			goto cleanup;
+		}
+		if (close(csock) < 0) {
+			int saved_errno = errno;
+			close(high);
+			csock = -1;
+			fprintf(stderr, "Couldn't close proxy socket descriptor: %s\n",
+			    strerror(saved_errno));
+			goto cleanup;
+		}
+		csock = high;
 	}
 
-	if (perform_handshake(csock, uri) < 0) {
-		clear_secret(uri, sizeof(uri));
+	if (perform_handshake(csock, uri, sizeof(uri), trailing, &trailing_length,
+	    options.handshake_timeout_ms) < 0) {
 		fprintf(stderr, "HTTP CONNECT handshake failed: %s\n", strerror(errno));
-		close(csock);
-		return EXIT_FAILURE;
+		goto cleanup;
+	}
+	if (options.verbose)
+		fprintf(stderr, "corkscrew: proxy tunnel established\n");
+	result = relay(csock, trailing, trailing_length);
+
+cleanup:
+	if (fp != NULL && fclose(fp) != 0 && result == EXIT_SUCCESS)
+		result = EXIT_FAILURE;
+	if (csock >= 0 && close(csock) < 0 && result == EXIT_SUCCESS)
+		result = EXIT_FAILURE;
+	if (up != NULL) {
+		clear_secret(up, AUTH_MAX_LENGTH + 2);
+		free(up);
 	}
 	clear_secret(uri, sizeof(uri));
-	int result = relay(csock);
-	close(csock);
 	return result;
 }
