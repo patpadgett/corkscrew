@@ -3,7 +3,7 @@ name: Publish release
 on:
   push:
     tags:
-      - '3.0'
+      - '3.*'
 
 permissions:
   contents: write

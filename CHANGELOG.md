@@ -2,7 +2,11 @@
 
 All notable changes to Corkscrew are documented here.
 
-## Unreleased
+## 3.1 - 2026-10-23
+
+This release relicenses the project under MIT, removes generated build
+artifacts from version control, and consolidates the changelog. The CONNECT
+protocol and authentication behavior are unchanged.
 
 ### Licensing and repository cleanup
 
@@ -103,9 +107,9 @@ compatibility options, and expands continuous integration.
 
 ## 2.0 - baseline
 
-The `2.0` tag records the pre-hardening release baseline. The changes above
-describe the 3.0 release. The historical `v2.0` tag is retained unchanged for
-older release references.
+The `2.0` tag records the pre-hardening release baseline. The 3.0 and 3.1
+sections above describe later releases. The historical `v2.0` tag is retained
+unchanged for older release references.
 
 ## Historical changes
 

@@ -1,14 +1,16 @@
 Corkscrew NEWS
 ==============
 
-Unreleased
-----------
+3.1 - 2026-10-23
+----------------
 
 * Relicense Corkscrew under the MIT License. Releases published before this
   change remain available under their original GPL terms.
 * Remove obsolete Autotools-generated files, the generic INSTALL file, and the
   redundant AUTHORS file. Build from a Git checkout with autoreconf -fi.
 * Merge the legacy ChangeLog into CHANGELOG.md and remove the separate file.
+* Replace the Base64 encoder with an independent implementation. The
+  Proxy-Authorization wire format is unchanged.
 
 3.0 - 2026-10-23
 ----------------
@@ -42,4 +44,4 @@ Unreleased
 * Add a tinyproxy loopback integration test, a libFuzzer parser harness, and
   macOS portability CI.
 
-See CHANGELOG.md for the complete 3.0 change list.
+See CHANGELOG.md for the complete change history.

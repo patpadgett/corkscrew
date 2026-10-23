@@ -1,4 +1,4 @@
-AC_INIT([corkscrew], [3.0])
+AC_INIT([corkscrew], [3.1])
 AC_CONFIG_SRCDIR([corkscrew.c])
 AC_CONFIG_HEADERS([config.h:config.in])
 AM_INIT_AUTOMAKE([foreign])

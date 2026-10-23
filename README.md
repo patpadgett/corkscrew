@@ -1,4 +1,4 @@
-# Corkscrew 3.0
+# Corkscrew 3.1
 
 [![Build and regression tests](https://github.com/patpadgett/corkscrew/actions/workflows/ci.yml/badge.svg)](https://github.com/patpadgett/corkscrew/actions/workflows/ci.yml)
 
@@ -132,9 +132,9 @@ signal received during the relay.
 
 ## Changes
 
-See [CHANGELOG.md](CHANGELOG.md) for the 3.0 changes and the 2.0 baseline
-note. The `2.0` and `3.0` Git tags identify the baseline and this release;
-the older historical `v2.0` tag is retained unchanged.
+See [CHANGELOG.md](CHANGELOG.md) for the 3.1 changes and release history.
+The `2.0` tag records the baseline; the `3.0` and `3.1` tags identify the
+releases. The older historical `v2.0` tag is retained unchanged.
 
 ## License
 
