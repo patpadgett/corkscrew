@@ -37,7 +37,7 @@ char linefeed[] = "\r\n\r\n"; /* it is better and tested with oops & squid */
 ** Copyright (C) 2001 Tamas SZERB <toma@rulez.org>
 */
 
-static const char base64[64] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+static const char base64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /* Include the terminator; check before either rounding or multiplying. */
 static int base64_output_size(size_t len, size_t *size)

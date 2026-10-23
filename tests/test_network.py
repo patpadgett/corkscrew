@@ -42,8 +42,9 @@ class NetworkTests(unittest.TestCase):
         self.assertNotIn(b"LeakSanitizer", stderr)
         self.assertNotIn(b"runtime error:", stderr)
 
-    def rejected(self, args, message=None):
-        result = subprocess.run([self.binary, *args], input=b"", capture_output=True, timeout=3)
+    def rejected(self, args, message=None, timeout=3):
+        result = subprocess.run([self.binary, *args], input=b"", capture_output=True,
+                                timeout=timeout)
         self.assert_clean_stderr(result.stderr)
         self.assertNotEqual(result.returncode, 0, result)
         if message:
@@ -205,7 +206,9 @@ class NetworkTests(unittest.TestCase):
     def test_connect_failure(self):
         with socket.socket() as reserved:
             reserved.bind(("127.0.0.1", 0))
-            self.rejected(["127.0.0.1", str(reserved.getsockname()[1]), "example.com", "443"], b"Couldn't establish connection")
+            self.rejected(["--connect-timeout=1", "127.0.0.1",
+                           str(reserved.getsockname()[1]), "example.com", "443"],
+                          b"Couldn't establish connection", timeout=5)
 
     def closed_stdio_rejected(self, fd, message):
         with socket.socket() as listener:

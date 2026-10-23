@@ -64,6 +64,14 @@ jobs:
           ./configure CC=clang CFLAGS='-O2 -g -Wall -Wextra'
       - name: Build and run portable tests
         run: make check
+      - name: Show test logs on failure
+        if: failure()
+        run: |
+          cat test-suite.log || true
+          for f in tests/*.log; do
+            echo "=== $f"
+            cat "$f"
+          done
       - name: Run distcheck
         run: make distcheck
 
