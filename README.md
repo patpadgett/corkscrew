@@ -2,6 +2,8 @@
 
 [![Build and regression tests](https://github.com/patpadgett/corkscrew/actions/workflows/ci.yml/badge.svg)](https://github.com/patpadgett/corkscrew/actions/workflows/ci.yml)
 
+[Hosted on CubePath](https://cubepath.com/?utm_source=open-source&utm_medium=referral&utm_campaign=hosted-on-cubepath)
+
 Corkscrew tunnels SSH through an HTTP proxy that permits the HTTP CONNECT
 method. It can also be used for other protocols that need a TCP tunnel.
 
